@@ -177,9 +177,7 @@ func (r *QuestionRepository) SetArchived(ctx context.Context, id string, isArchi
 
 func (r *QuestionRepository) DeletePermanent(ctx context.Context, id string) error {
 	return r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM question_tags WHERE question_id = ?`, id); err != nil {
-			return fmt.Errorf("delete question tags: %w", err)
-		}
+		// Foreign keys cascade to tags, answers, reviews and attachment metadata.
 		result, err := tx.ExecContext(ctx, `DELETE FROM questions WHERE id = ?`, id)
 		if err != nil {
 			return fmt.Errorf("delete question: %w", err)
@@ -191,15 +189,7 @@ func (r *QuestionRepository) DeletePermanent(ctx context.Context, id string) err
 		if affected == 0 {
 			return question.ErrNotFound
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM answer_attempts WHERE question_id = ?`, id); err != nil {
-			return fmt.Errorf("delete answer attempts: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM mistake_reviews WHERE question_id = ?`, id); err != nil {
-			return fmt.Errorf("delete mistake reviews: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM attachments WHERE owner_type = 'question' AND owner_id = ?`, id); err != nil {
-			return fmt.Errorf("delete attachments: %w", err)
-		}
+
 		return nil
 	})
 }
@@ -254,6 +244,8 @@ func (r *QuestionRepository) Search(ctx context.Context, query question.Question
 	if query.Archived != nil {
 		conditions = append(conditions, "q.is_archived = ?")
 		args = append(args, *query.Archived)
+	} else {
+		conditions = append(conditions, "q.is_archived = 0")
 	}
 	if query.HasMistakes != nil {
 		expr := "EXISTS"
@@ -303,6 +295,35 @@ func (r *QuestionRepository) Search(ctx context.Context, query question.Question
 	}
 	if err := rows.Err(); err != nil {
 		return question.QuestionSearchResult{}, fmt.Errorf("iterate searched questions: %w", err)
+	}
+	// Release the single database connection before querying tags.
+	if err := rows.Close(); err != nil {
+		return question.QuestionSearchResult{}, fmt.Errorf("close searched questions: %w", err)
+	}
+	if len(items) > 0 {
+		placeholders := make([]string, len(items))
+		ids := make([]any, len(items))
+		indices := make(map[string]int, len(items))
+		for i := range items {
+			placeholders[i], ids[i], indices[items[i].ID] = "?", items[i].ID, i
+			items[i].Tags = make([]string, 0)
+		}
+		tags, err := r.db.QueryContext(ctx, `SELECT question_id, tag FROM question_tags WHERE question_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY tag`, ids...)
+		if err != nil {
+			return question.QuestionSearchResult{}, fmt.Errorf("query search tags: %w", err)
+		}
+		defer tags.Close()
+		for tags.Next() {
+			var id, tag string
+			if err := tags.Scan(&id, &tag); err != nil {
+				return question.QuestionSearchResult{}, fmt.Errorf("scan search tag: %w", err)
+			}
+			i := indices[id]
+			items[i].Tags = append(items[i].Tags, tag)
+		}
+		if err := tags.Err(); err != nil {
+			return question.QuestionSearchResult{}, fmt.Errorf("iterate search tags: %w", err)
+		}
 	}
 	return question.QuestionSearchResult{Items: items, Page: query.Page, PageSize: query.PageSize, Total: total, HasNext: offset+len(items) < total}, nil
 }
