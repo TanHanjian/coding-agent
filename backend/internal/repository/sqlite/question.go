@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"interview-memory-agent/backend/internal/question"
@@ -204,13 +205,131 @@ func (r *QuestionRepository) DeletePermanent(ctx context.Context, id string) err
 }
 
 func (r *QuestionRepository) Search(ctx context.Context, query question.QuestionSearchQuery) (question.QuestionSearchResult, error) {
-	// Implementation of search functionality is omitted for brevity.
-	return question.QuestionSearchResult{}, nil
+	query, err := question.NormalizeSearchQuery(query)
+	if err != nil {
+		return question.QuestionSearchResult{}, err
+	}
+
+	conditions := []string{"1 = 1"}
+	args := make([]any, 0)
+	if text := strings.TrimSpace(strings.ToLower(query.Text)); text != "" {
+		conditions = append(conditions, "(lower(q.title) LIKE ? OR lower(q.body_markdown) LIKE ? OR lower(q.source_name) LIKE ?)")
+		pattern := "%" + text + "%"
+		args = append(args, pattern, pattern, pattern)
+	}
+	if len(query.Types) > 0 {
+		placeholders := make([]string, len(query.Types))
+		for i, value := range query.Types {
+			placeholders[i] = "?"
+			args = append(args, string(value))
+		}
+		conditions = append(conditions, "q.type IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(query.Difficulties) > 0 {
+		placeholders := make([]string, len(query.Difficulties))
+		for i, value := range query.Difficulties {
+			placeholders[i] = "?"
+			args = append(args, string(value))
+		}
+		conditions = append(conditions, "q.difficulty IN ("+strings.Join(placeholders, ",")+")")
+	}
+	if len(query.Results) > 0 {
+		placeholders := make([]string, len(query.Results))
+		for i, value := range query.Results {
+			placeholders[i] = "?"
+			args = append(args, string(value))
+		}
+		conditions = append(conditions, "EXISTS (SELECT 1 FROM answer_attempts aa WHERE aa.question_id = q.id AND aa.result IN ("+strings.Join(placeholders, ",")+"))")
+	}
+	for _, tag := range query.Tags {
+		if tag = strings.TrimSpace(tag); tag != "" {
+			conditions = append(conditions, "EXISTS (SELECT 1 FROM question_tags qt WHERE qt.question_id = q.id AND qt.tag = ?)")
+			args = append(args, tag)
+		}
+	}
+	if source := strings.TrimSpace(query.Source); source != "" {
+		conditions = append(conditions, "(q.source_name = ? OR q.source_url = ?)")
+		args = append(args, source, source)
+	}
+	if query.Archived != nil {
+		conditions = append(conditions, "q.is_archived = ?")
+		args = append(args, *query.Archived)
+	}
+	if query.HasMistakes != nil {
+		expr := "EXISTS"
+		if !*query.HasMistakes {
+			expr = "NOT EXISTS"
+		}
+		conditions = append(conditions, expr+" (SELECT 1 FROM mistake_reviews mr WHERE mr.question_id = q.id)")
+	}
+	where := strings.Join(conditions, " AND ")
+	var total int
+	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM questions q WHERE "+where, args...).Scan(&total); err != nil {
+		return question.QuestionSearchResult{}, fmt.Errorf("count questions: %w", err)
+	}
+
+	sortColumns := map[string]string{"created_at": "q.created_at", "updated_at": "q.updated_at", "title": "q.title", "difficulty": "q.difficulty", "type": "q.type"}
+	sortColumn := sortColumns[query.SortBy]
+	if sortColumn == "" {
+		sortColumn = "q.updated_at"
+	}
+	direction := "DESC"
+	if strings.EqualFold(query.SortDirection, "asc") {
+		direction = "ASC"
+	}
+	offset := (query.Page - 1) * query.PageSize
+	args = append(args, query.PageSize, offset)
+	rows, err := r.db.QueryContext(ctx, `SELECT q.id, q.title, q.type, q.body_markdown, q.difficulty, q.source_name, q.source_url, q.is_archived, q.created_at, q.updated_at FROM questions q WHERE `+where+` ORDER BY `+sortColumn+` `+direction+`, q.id ASC LIMIT ? OFFSET ?`, args...)
+	if err != nil {
+		return question.QuestionSearchResult{}, fmt.Errorf("search questions: %w", err)
+	}
+	defer rows.Close()
+	items := make([]question.QuestionRecord, 0)
+	for rows.Next() {
+		var item question.QuestionRecord
+		var createdAt, updatedAt string
+		if err := rows.Scan(&item.ID, &item.Title, &item.Type, &item.BodyMarkdown, &item.Difficulty, &item.SourceName, &item.SourceURL, &item.IsArchived, &createdAt, &updatedAt); err != nil {
+			return question.QuestionSearchResult{}, fmt.Errorf("scan searched question: %w", err)
+		}
+		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+		if err != nil {
+			return question.QuestionSearchResult{}, fmt.Errorf("parse searched question created_at: %w", err)
+		}
+		item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+		if err != nil {
+			return question.QuestionSearchResult{}, fmt.Errorf("parse searched question updated_at: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return question.QuestionSearchResult{}, fmt.Errorf("iterate searched questions: %w", err)
+	}
+	return question.QuestionSearchResult{Items: items, Page: query.Page, PageSize: query.PageSize, Total: total, HasNext: offset+len(items) < total}, nil
 }
 
 func (r *QuestionRepository) GetDetail(ctx context.Context, id string) (question.QuestionDetail, error) {
-	// Implementation of get detail functionality is omitted for brevity.
-	return question.QuestionDetail{}, nil
+	record, err := r.GetByID(ctx, id)
+	if err != nil {
+		return question.QuestionDetail{}, err
+	}
+	attempts, err := NewAnswerRepository(r.db).ListByQuestion(ctx, id)
+	if err != nil {
+		return question.QuestionDetail{}, fmt.Errorf("list answer attempts: %w", err)
+	}
+	reviews, err := NewReviewRepository(r.db).ListByQuestion(ctx, id)
+	if err != nil {
+		return question.QuestionDetail{}, fmt.Errorf("list mistake reviews: %w", err)
+	}
+	attachments, err := NewAttachmentRepository(r.db).ListByOwner(ctx, "question", id)
+	if err != nil {
+		return question.QuestionDetail{}, fmt.Errorf("list attachments: %w", err)
+	}
+	return question.QuestionDetail{
+		Question:    record,
+		Answers:     attempts,
+		Reviews:     reviews,
+		Attachments: attachments,
+	}, nil
 }
 
 var _ question.QuestionRepository = (*QuestionRepository)(nil)
