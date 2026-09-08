@@ -9,10 +9,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"interview-memory-agent/backend/internal/config"
-	"interview-memory-agent/backend/internal/httpx"
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/answer"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/domain/review"
+	"interview-memory-agent/backend/internal/infrastructure/config"
+	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
+	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
 func main() {
@@ -37,11 +40,26 @@ func main() {
 		slog.Error("run migrations", "error", err)
 		os.Exit(1)
 	}
+	questionRepository := sqlite.NewQuestionRepository(db)
+	answerRepository := sqlite.NewAnswerRepository(db)
+	reviewRepository := sqlite.NewReviewRepository(db)
+	questionService := question.NewQuestionServiceWithDependencies(question.QuestionServiceDependencies{
+		Creator:       questionRepository,
+		DetailReader:  questionRepository,
+		Updater:       questionRepository,
+		ArchiveWriter: questionRepository,
+		Deleter:       questionRepository,
+		Searcher:      questionRepository,
+	})
+	answerService := answer.NewService(answer.Dependencies{Store: answerRepository, Questions: questionRepository})
+	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	router := chi.NewRouter()
 	router.Get("/healthz", healthHandler(db).ServeHTTP)
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", healthHandler(db).ServeHTTP)
-		question.RegisterQuestionRoutes(r, question.UnimplementedQuestionService{})
+		question.RegisterRoutes(r, questionService)
+		answer.RegisterRoutes(r, answerService)
+		review.RegisterRoutes(r, reviewService)
 	})
 	handler := httpx.WithRequestID(httpx.Recover(requestLogger(router)))
 	server := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}

@@ -3,9 +3,9 @@ package sqlite_test
 import (
 	"context"
 	"errors"
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/repository/sqlite"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 	"path/filepath"
 	"reflect"
 	"testing"

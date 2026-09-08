@@ -4,6 +4,9 @@ import (
 	"context"
 	"io"
 	"time"
+
+	"interview-memory-agent/backend/internal/domain/answer"
+	"interview-memory-agent/backend/internal/domain/review"
 )
 
 type QuestionType string
@@ -24,13 +27,14 @@ const (
 	DifficultyHard   Difficulty = "hard"
 )
 
-type AnswerResult string
+// Deprecated: use answer.Result.
+type AnswerResult = answer.Result
 
 const (
-	AnswerResultSkipped   AnswerResult = "skipped"
-	AnswerResultIncorrect AnswerResult = "incorrect"
-	AnswerResultPartial   AnswerResult = "partial"
-	AnswerResultCorrect   AnswerResult = "correct"
+	AnswerResultSkipped   = answer.ResultSkipped
+	AnswerResultIncorrect = answer.ResultIncorrect
+	AnswerResultPartial   = answer.ResultPartial
+	AnswerResultCorrect   = answer.ResultCorrect
 )
 
 type QuestionRecord struct {
@@ -47,31 +51,11 @@ type QuestionRecord struct {
 	UpdatedAt    time.Time    `json:"updatedAt"`
 }
 
-type AnswerAttempt struct {
-	ID           string       `json:"id"`
-	QuestionID   string       `json:"questionId"`
-	BodyMarkdown string       `json:"bodyMarkdown"`
-	Code         string       `json:"code,omitempty"`
-	CodeLanguage string       `json:"codeLanguage,omitempty"`
-	Result       AnswerResult `json:"result"`
-	DurationMs   *int64       `json:"durationMs,omitempty"`
-	CreatedAt    time.Time    `json:"createdAt"`
-	UpdatedAt    time.Time    `json:"updatedAt"`
-}
+// Deprecated: use answer.Attempt.
+type AnswerAttempt = answer.Attempt
 
-type MistakeReview struct {
-	ID                 string    `json:"id"`
-	QuestionID         string    `json:"questionId"`
-	AnswerAttemptID    *string   `json:"answerAttemptId,omitempty"`
-	MistakeCategory    string    `json:"mistakeCategory,omitempty"`
-	ReviewMarkdown     string    `json:"reviewMarkdown"`
-	CorrectionMarkdown string    `json:"correctionMarkdown,omitempty"`
-	KeyConclusions     string    `json:"keyConclusions,omitempty"`
-	AIContentMarkdown  string    `json:"aiContentMarkdown,omitempty"`
-	AISource           string    `json:"aiSource,omitempty"`
-	CreatedAt          time.Time `json:"createdAt"`
-	UpdatedAt          time.Time `json:"updatedAt"`
-}
+// Deprecated: use review.Record.
+type MistakeReview = review.Record
 
 type Attachment struct {
 	ID           string    `json:"id"`
@@ -94,55 +78,35 @@ type QuestionDetail struct {
 }
 
 type CreateQuestionInput struct {
-	Title        string       `validate:"required,notblank"`
-	Type         QuestionType `validate:"required,question_type"`
-	BodyMarkdown string       `validate:"required,notblank"`
-	Difficulty   *Difficulty  `validate:"omitempty,question_difficulty"`
-	SourceName   string
-	SourceURL    string
-	Tags         []string `validate:"dive,required,notblank"`
+	Title        string       `json:"title" validate:"required,notblank"`
+	Type         QuestionType `json:"type" validate:"required,question_type"`
+	BodyMarkdown string       `json:"bodyMarkdown" validate:"required,notblank"`
+	Difficulty   *Difficulty  `json:"difficulty,omitempty" validate:"omitempty,question_difficulty"`
+	SourceName   string       `json:"sourceName"`
+	SourceURL    string       `json:"sourceUrl"`
+	Tags         []string     `json:"tags" validate:"dive,required,notblank"`
 }
 type UpdateQuestionInput struct {
-	Title        *string
-	Type         *QuestionType
-	BodyMarkdown *string
-	Difficulty   **Difficulty
-	SourceName   *string
-	SourceURL    *string
-	Tags         *[]string
+	Title        *string       `json:"title"`
+	Type         *QuestionType `json:"type"`
+	BodyMarkdown *string       `json:"bodyMarkdown"`
+	Difficulty   **Difficulty  `json:"difficulty"`
+	SourceName   *string       `json:"sourceName"`
+	SourceURL    *string       `json:"sourceUrl"`
+	Tags         *[]string     `json:"tags"`
 }
-type CreateAnswerInput struct {
-	BodyMarkdown string
-	Code         string
-	CodeLanguage string
-	Result       AnswerResult
-	DurationMs   *int64
-}
-type UpdateAnswerInput struct {
-	BodyMarkdown *string
-	Code         *string
-	CodeLanguage *string
-	Result       *AnswerResult
-	DurationMs   **int64
-}
-type CreateReviewInput struct {
-	AnswerAttemptID    *string
-	MistakeCategory    string
-	ReviewMarkdown     string
-	CorrectionMarkdown string
-	KeyConclusions     string
-	AIContentMarkdown  string
-	AISource           string
-}
-type UpdateReviewInput struct {
-	AnswerAttemptID    **string
-	MistakeCategory    *string
-	ReviewMarkdown     *string
-	CorrectionMarkdown *string
-	KeyConclusions     *string
-	AIContentMarkdown  *string
-	AISource           *string
-}
+
+// Deprecated: use answer.CreateInput.
+type CreateAnswerInput = answer.CreateInput
+
+// Deprecated: use answer.UpdateInput.
+type UpdateAnswerInput = answer.UpdateInput
+
+// Deprecated: use review.CreateInput.
+type CreateReviewInput = review.CreateInput
+
+// Deprecated: use review.UpdateInput.
+type UpdateReviewInput = review.UpdateInput
 type AttachmentUploadInput struct {
 	QuestionID   string
 	OwnerType    string

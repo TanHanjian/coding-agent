@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
 // AttachmentRepository stores metadata only; the service manages physical files.
@@ -145,4 +146,4 @@ func (r *AttachmentRepository) Delete(ctx context.Context, id string) error {
 	return nil
 }
 
-var _ question.AttachmentRepository = (*AttachmentRepository)(nil)
+var _ repository.AttachmentRepository = (*AttachmentRepository)(nil)

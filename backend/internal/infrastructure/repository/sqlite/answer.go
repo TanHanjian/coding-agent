@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
 // AnswerRepository stores answer attempts associated with questions.
@@ -176,4 +177,4 @@ func (r *AnswerRepository) Delete(ctx context.Context, id string) error {
 	})
 }
 
-var _ question.AnswerRepository = (*AnswerRepository)(nil)
+var _ repository.AnswerRepository = (*AnswerRepository)(nil)

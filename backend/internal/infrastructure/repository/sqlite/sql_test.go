@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/repository/sqlite"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
 func newSQLTestDB(t *testing.T) (*storage.DB, context.Context) {
@@ -59,6 +59,27 @@ func TestSQLSearchExcludesArchivedAndLoadsTags(t *testing.T) {
 }
 
 func boolPtr(v bool) *bool { return &v }
+
+func TestSQLSearchesAnswerAndReviewContent(t *testing.T) {
+	db, ctx := newSQLTestDB(t)
+	createSQLQuestion(t, ctx, db, "q1", false)
+	now := time.Now().UTC()
+	if err := sqlite.NewAnswerRepository(db).Create(ctx, question.AnswerAttempt{ID: "a1", QuestionID: "q1", BodyMarkdown: "use a monotonic stack", Result: question.AnswerResultPartial, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	if err := sqlite.NewReviewRepository(db).Create(ctx, question.MistakeReview{ID: "r1", QuestionID: "q1", ReviewMarkdown: "remember duplicate boundaries", CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	for _, text := range []string{"monotonic stack", "duplicate boundaries"} {
+		result, err := sqlite.NewQuestionRepository(db).Search(ctx, question.QuestionSearchQuery{Text: text})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if result.Total != 1 || len(result.Items) != 1 || result.Items[0].ID != "q1" {
+			t.Fatalf("text %q: unexpected search result: %+v", text, result)
+		}
+	}
+}
 
 func TestSQLAnswerCRUDAndDeleteCleanup(t *testing.T) {
 	db, ctx := newSQLTestDB(t)

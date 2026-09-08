@@ -8,8 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
 // QuestionRepository stores question records in SQLite.
@@ -52,6 +53,18 @@ func (r *QuestionRepository) Create(ctx context.Context, record question.Questio
 		}
 		return nil
 	})
+}
+
+// Exists checks whether the question is present without exposing its domain model.
+func (r *QuestionRepository) Exists(ctx context.Context, id string) error {
+	var exists bool
+	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?)`, id).Scan(&exists); err != nil {
+		return fmt.Errorf("check question exists: %w", err)
+	}
+	if !exists {
+		return question.ErrNotFound
+	}
+	return nil
 }
 
 func (r *QuestionRepository) GetByID(ctx context.Context, id string) (question.QuestionRecord, error) {
@@ -203,9 +216,11 @@ func (r *QuestionRepository) Search(ctx context.Context, query question.Question
 	conditions := []string{"1 = 1"}
 	args := make([]any, 0)
 	if text := strings.TrimSpace(strings.ToLower(query.Text)); text != "" {
-		conditions = append(conditions, "(lower(q.title) LIKE ? OR lower(q.body_markdown) LIKE ? OR lower(q.source_name) LIKE ?)")
+		conditions = append(conditions, `(lower(q.title) LIKE ? OR lower(q.body_markdown) LIKE ? OR lower(q.source_name) LIKE ? OR lower(q.source_url) LIKE ? OR
+			EXISTS (SELECT 1 FROM answer_attempts aa WHERE aa.question_id = q.id AND (lower(aa.body_markdown) LIKE ? OR lower(aa.code) LIKE ?)) OR
+			EXISTS (SELECT 1 FROM mistake_reviews mr WHERE mr.question_id = q.id AND (lower(mr.mistake_category) LIKE ? OR lower(mr.review_markdown) LIKE ? OR lower(mr.correction_markdown) LIKE ? OR lower(mr.key_conclusions) LIKE ? OR lower(mr.ai_content_markdown) LIKE ?)))`)
 		pattern := "%" + text + "%"
-		args = append(args, pattern, pattern, pattern)
+		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
 	}
 	if len(query.Types) > 0 {
 		placeholders := make([]string, len(query.Types))
@@ -271,7 +286,7 @@ func (r *QuestionRepository) Search(ctx context.Context, query question.Question
 	}
 	offset := (query.Page - 1) * query.PageSize
 	args = append(args, query.PageSize, offset)
-	rows, err := r.db.QueryContext(ctx, `SELECT q.id, q.title, q.type, q.body_markdown, q.difficulty, q.source_name, q.source_url, q.is_archived, q.created_at, q.updated_at FROM questions q WHERE `+where+` ORDER BY `+sortColumn+` `+direction+`, q.id ASC LIMIT ? OFFSET ?`, args...)
+	rows, err := r.db.QueryContext(ctx, `SELECT q.id, q.title, q.type, q.body_markdown, q.difficulty, q.source_name, q.source_url, q.is_archived, q.created_at, q.updated_at FROM questions q WHERE `+where+` ORDER BY `+sortColumn+` `+direction+`, q.id `+direction+` LIMIT ? OFFSET ?`, args...)
 	if err != nil {
 		return question.QuestionSearchResult{}, fmt.Errorf("search questions: %w", err)
 	}
@@ -353,4 +368,4 @@ func (r *QuestionRepository) GetDetail(ctx context.Context, id string) (question
 	}, nil
 }
 
-var _ question.QuestionRepository = (*QuestionRepository)(nil)
+var _ repository.QuestionRepository = (*QuestionRepository)(nil)

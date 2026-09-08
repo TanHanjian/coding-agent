@@ -7,8 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	"interview-memory-agent/backend/internal/question"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/domain/question"
+	"interview-memory-agent/backend/internal/infrastructure/repository"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
 // ReviewRepository stores mistake reviews and optional answer associations.
@@ -158,4 +159,4 @@ func (r *ReviewRepository) Delete(ctx context.Context, id string) error {
 	})
 }
 
-var _ question.ReviewRepository = (*ReviewRepository)(nil)
+var _ repository.ReviewRepository = (*ReviewRepository)(nil)

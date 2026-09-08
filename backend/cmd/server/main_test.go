@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"interview-memory-agent/backend/internal/httpx"
-	"interview-memory-agent/backend/internal/storage"
+	"interview-memory-agent/backend/internal/infrastructure/storage"
+	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
 func TestHealthHandler(t *testing.T) {
