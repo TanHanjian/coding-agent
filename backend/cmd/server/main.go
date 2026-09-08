@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"interview-memory-agent/backend/internal/domain/answer"
+	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/domain/review"
 	"interview-memory-agent/backend/internal/infrastructure/config"
@@ -43,6 +44,8 @@ func main() {
 	questionRepository := sqlite.NewQuestionRepository(db)
 	answerRepository := sqlite.NewAnswerRepository(db)
 	reviewRepository := sqlite.NewReviewRepository(db)
+	conversationRepository := sqlite.NewConversationRepository(db)
+	messageRepository := sqlite.NewMessageRepository(db)
 	questionService := question.NewQuestionServiceWithDependencies(question.QuestionServiceDependencies{
 		Creator:       questionRepository,
 		DetailReader:  questionRepository,
@@ -53,6 +56,7 @@ func main() {
 	})
 	answerService := answer.NewService(answer.Dependencies{Store: answerRepository, Questions: questionRepository})
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
+	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
 	router := chi.NewRouter()
 	router.Get("/healthz", healthHandler(db).ServeHTTP)
 	router.Route("/api/v1", func(r chi.Router) {
@@ -60,6 +64,7 @@ func main() {
 		question.RegisterRoutes(r, questionService)
 		answer.RegisterRoutes(r, answerService)
 		review.RegisterRoutes(r, reviewService)
+		conversation.RegisterRoutes(r, conversationService)
 	})
 	handler := httpx.WithRequestID(httpx.Recover(requestLogger(router)))
 	server := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}

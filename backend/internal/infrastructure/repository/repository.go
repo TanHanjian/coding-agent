@@ -2,8 +2,10 @@ package repository
 
 import (
 	"context"
+	"time"
 
 	"interview-memory-agent/backend/internal/domain/answer"
+	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/domain/review"
 )
@@ -36,5 +38,21 @@ type AttachmentRepository interface {
 	Create(context.Context, question.Attachment) error
 	ListByOwner(context.Context, string, string) ([]question.Attachment, error)
 	GetByID(context.Context, string) (question.Attachment, error)
+	Delete(context.Context, string) error
+}
+
+type ConversationRepository interface {
+	Create(context.Context, conversation.Conversation) error
+	GetByID(context.Context, string) (conversation.Conversation, error)
+	List(context.Context) ([]conversation.Conversation, error)
+	UpdateTitle(context.Context, string, string, time.Time) error
+	Delete(context.Context, string) error
+}
+
+type MessageRepository interface {
+	Create(context.Context, conversation.Message) (conversation.Message, error)
+	GetByID(context.Context, string) (conversation.Message, error)
+	ListByConversation(context.Context, string) ([]conversation.Message, error)
+	UpdateAssistant(context.Context, conversation.Message) error
 	Delete(context.Context, string) error
 }

@@ -1,0 +1,2 @@
+# Local development secrets. Keep .env.example under version control.
+.env
