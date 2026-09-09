@@ -77,6 +77,21 @@ X-Assistant-Message-ID: m_02...
 
 请求在写入响应头前失败时，返回既有 JSON 错误体。响应已开始后发生失败时，必须发送 AI SDK error part，并将助手 Message 标记为 `failed`。
 
+## 3.1 当前代码骨架
+
+- `internal/domain/chat/http.go` 已固定 HTTP 路由、请求 DTO 校验和响应生命周期端口；在尚未实现生成前，`POST /api/v1/chat` 返回 `501 not_implemented`。
+- `TurnStore` 固定了后续 SQLite 实现必须提供的原子消息对创建/幂等、文本追加和终态更新能力；`0004_chat_turns.sql` 已提供 `client_message_id` 与会话内唯一约束，普通 Message CRUD 不承担这些并发语义。
+- `ResponseSink` 隔离 HTTP Data Stream 编码。实现时只能在 `Start` 成功持久化消息对之后发送流响应；不得由 Eino Executor 直接操作 HTTP。
+- `UnsupportedExecutor` 仅用于当前服务装配。实现 `RuntimeBuilder` 后，将它替换为 `EinoExecutor`；不要在该占位类型中加入模型调用。
+
+## 3.2 生成运行与 SSE 订阅分离
+
+- 浏览器的 `POST /api/v1/chat` 与 `GET /api/v1/chat/{assistantMessageId}/stream` 都只是订阅者；刷新页面只能断开旧 SSE，不能取消 Eino 或上游模型流。
+- Chat Service 必须从服务级 `RunContextFactory` 创建生成上下文，不能把 HTTP 的 `request.Context()` 传给 `Executor.Stream`。显式取消、超时和服务关闭才是运行取消来源。
+- 首版恢复使用 `snapshot + delta`：Hub 在同一把锁内注册订阅者并复制当前完整文本；HTTP 先发送 snapshot（前端替换全文），再发送后续 delta（前端追加），不需要 `afterSequence` 或事件回放。
+- `messages.content` 仍批量持久化为刷新后加载历史的最后检查点。进程内 Hub 不得因慢 SSE 客户端阻塞 Eino；服务重启后无法继续同一上游模型请求，前端显示最后检查点并提供重新生成。
+- 现有 `generation_events` 迁移为未来的跨进程精确回放预留，首版不写入也不读取它。
+
 ## 4. 取消生成
 
 ### `POST /api/v1/chat/{assistantMessageId}/cancel`

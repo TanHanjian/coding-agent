@@ -196,7 +196,7 @@ func (r *MessageRepository) Delete(ctx context.Context, id string) error {
 	})
 }
 
-const messageColumns = `id, conversation_id, sequence, role, content, status, error_code, error_message, created_at, updated_at`
+const messageColumns = `id, conversation_id, client_message_id, sequence, role, content, status, error_code, error_message, created_at, updated_at`
 
 func scanConversation(row interface{ Scan(...any) error }) (conversation.Conversation, error) {
 	var record conversation.Conversation
@@ -219,7 +219,7 @@ func scanConversation(row interface{ Scan(...any) error }) (conversation.Convers
 func scanMessage(row interface{ Scan(...any) error }) (conversation.Message, error) {
 	var record conversation.Message
 	var createdAt, updatedAt string
-	if err := row.Scan(&record.ID, &record.ConversationID, &record.Sequence, &record.Role, &record.Content, &record.Status, &record.ErrorCode, &record.ErrorMessage, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&record.ID, &record.ConversationID, &record.ClientMessageID, &record.Sequence, &record.Role, &record.Content, &record.Status, &record.ErrorCode, &record.ErrorMessage, &createdAt, &updatedAt); err != nil {
 		return conversation.Message{}, err
 	}
 	var err error

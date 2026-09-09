@@ -8,4 +8,5 @@ var (
 	ErrNotImplemented = errors.New("feature not implemented")
 	ErrNotFound       = errors.New("record not found")
 	ErrInvalidInput   = errors.New("invalid input")
+	ErrConflict       = errors.New("state conflict")
 )

@@ -10,6 +10,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"interview-memory-agent/backend/internal/domain/answer"
+	"interview-memory-agent/backend/internal/domain/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/domain/review"
@@ -57,6 +58,17 @@ func main() {
 	answerService := answer.NewService(answer.Dependencies{Store: answerRepository, Questions: questionRepository})
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
+	chatService, err := chat.NewSkeletonService(chat.Dependencies{
+		Executor:    chat.NewUnsupportedExecutor(),
+		Registry:    chat.NewMemoryGenerationRegistry(),
+		Hub:         chat.NewMemoryGenerationHub(),
+		RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
+		Store:       sqlite.NewChatTurnRepository(db),
+	})
+	if err != nil {
+		slog.Error("configure chat service", "error", err)
+		os.Exit(1)
+	}
 	router := chi.NewRouter()
 	router.Get("/healthz", healthHandler(db).ServeHTTP)
 	router.Route("/api/v1", func(r chi.Router) {
@@ -65,6 +77,7 @@ func main() {
 		answer.RegisterRoutes(r, answerService)
 		review.RegisterRoutes(r, reviewService)
 		conversation.RegisterRoutes(r, conversationService)
+		chat.RegisterRoutes(r, chatService)
 	})
 	handler := httpx.WithRequestID(httpx.Recover(requestLogger(router)))
 	server := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}

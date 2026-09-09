@@ -26,7 +26,7 @@ func NewEinoExecutor(builder RuntimeBuilder) (*EinoExecutor, error) {
 //  1. 使用服务端可信的已持久化历史和新用户消息调用 builder.Build。
 //  2. 将历史、当前用户消息和可信面试材料转换为 RuntimeInput，调用 runtime.Stream。
 //  3. 消费 StreamReader，直至完成或 ctx 被取消。
-//  4. 仅将用户可见的助手文本增量转发给 sink.AppendText。
+//  4. 仅将用户可见的助手文本增量转发给 sink.WriteChunk。
 //  5. 将预期的取消转换为 context.Canceled；包装其他错误时不得暴露服务商密钥。
 //
 // 此方法刻意返回 ErrNotImplemented，而不是发起模拟模型请求，避免未完成的
