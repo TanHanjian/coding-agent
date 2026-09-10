@@ -8,7 +8,7 @@ import (
 	"interview-memory-agent/backend/internal/domain/conversation"
 )
 
-// TextSink 接收用户可见的助手文本。实现应批量持久化文本并向活跃订阅者发布 delta。
+// TextSink 接收用户可见的助手文本增量。实现应批量持久化文本并向活跃订阅者发布 delta。
 type TextSink interface {
 	WriteChunk(context.Context, string) error
 }
@@ -27,6 +27,10 @@ type TurnStore interface {
 }
 
 // Runtime 是 Chat 应用层对 Eino 可流式运行单元的最小依赖。
+//
+// Stream 必须监听 ctx：当 ctx 结束时，它返回的 StreamReader 必须尽快以 ctx.Err()
+// 或 io.EOF 结束，不能让消费者永久阻塞在 Recv。每个非空 Content 都必须是可直接
+// 追加的助手文本增量；当前 Executor 不支持 ToolCalls。
 type Runtime interface {
 	Stream(context.Context, RuntimeInput, ...compose.Option) (*schema.StreamReader[*schema.Message], error)
 }
