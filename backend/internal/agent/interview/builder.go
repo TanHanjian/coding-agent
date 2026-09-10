@@ -6,7 +6,7 @@ import (
 	"errors"
 	"strings"
 
-	"interview-memory-agent/backend/internal/domain/chat"
+	chat "interview-memory-agent/backend/internal/application/chat"
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/components/prompt"

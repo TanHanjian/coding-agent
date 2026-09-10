@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"interview-memory-agent/backend/internal/domain/chat"
+	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
 	"interview-memory-agent/backend/internal/infrastructure/storage"

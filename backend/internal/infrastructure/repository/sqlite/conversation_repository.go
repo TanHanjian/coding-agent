@@ -81,37 +81,6 @@ type MessageRepository struct{ db *storage.DB }
 
 func NewMessageRepository(db *storage.DB) *MessageRepository { return &MessageRepository{db: db} }
 
-func (r *MessageRepository) Create(ctx context.Context, record conversation.Message) (conversation.Message, error) {
-	if !isInitialMessage(record) {
-		return conversation.Message{}, domainerr.ErrInvalidInput
-	}
-	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var exists bool
-		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM conversations WHERE id = ?)`, record.ConversationID).Scan(&exists); err != nil {
-			return fmt.Errorf("check conversation: %w", err)
-		}
-		if !exists {
-			return domainerr.ErrNotFound
-		}
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(sequence), 0) + 1 FROM messages WHERE conversation_id = ?`, record.ConversationID).Scan(&record.Sequence); err != nil {
-			return fmt.Errorf("allocate message sequence: %w", err)
-		}
-		if _, err := tx.ExecContext(ctx, `INSERT INTO messages (
-			id, conversation_id, sequence, role, content, status, error_code, error_message, created_at, updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			record.ID, record.ConversationID, record.Sequence, record.Role, record.Content, record.Status,
-			record.ErrorCode, record.ErrorMessage, formatTime(record.CreatedAt), formatTime(record.UpdatedAt)); err != nil {
-			return fmt.Errorf("insert message: %w", err)
-		}
-		_, err := tx.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, formatTime(record.UpdatedAt), record.ConversationID)
-		return err
-	})
-	if err != nil {
-		return conversation.Message{}, err
-	}
-	return record, nil
-}
-
 func (r *MessageRepository) GetByID(ctx context.Context, id string) (conversation.Message, error) {
 	record, err := scanMessage(r.db.QueryRowContext(ctx, `SELECT `+messageColumns+` FROM messages WHERE id = ?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -141,38 +110,6 @@ func (r *MessageRepository) ListByConversation(ctx context.Context, conversation
 		return nil, fmt.Errorf("iterate messages: %w", err)
 	}
 	return records, nil
-}
-
-func (r *MessageRepository) UpdateAssistant(ctx context.Context, record conversation.Message) error {
-	if record.Role != conversation.MessageRoleAssistant || !isTerminalStatus(record.Status) {
-		return domainerr.ErrInvalidInput
-	}
-	return r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var role conversation.MessageRole
-		var status conversation.MessageStatus
-		err := tx.QueryRowContext(ctx, `SELECT role, status FROM messages WHERE id = ? AND conversation_id = ?`, record.ID, record.ConversationID).Scan(&role, &status)
-		if errors.Is(err, sql.ErrNoRows) {
-			return domainerr.ErrNotFound
-		}
-		if err != nil {
-			return fmt.Errorf("get assistant message state: %w", err)
-		}
-		if role != conversation.MessageRoleAssistant || status != conversation.MessageStatusStreaming {
-			return domainerr.ErrInvalidInput
-		}
-		result, err := tx.ExecContext(ctx, `UPDATE messages
-			SET content = ?, status = ?, error_code = ?, error_message = ?, updated_at = ?
-			WHERE id = ? AND conversation_id = ?`,
-			record.Content, record.Status, record.ErrorCode, record.ErrorMessage, formatTime(record.UpdatedAt), record.ID, record.ConversationID)
-		if err != nil {
-			return fmt.Errorf("update assistant message: %w", err)
-		}
-		if err := requireAffected(result, "update assistant message"); err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `UPDATE conversations SET updated_at = ? WHERE id = ?`, formatTime(record.UpdatedAt), record.ConversationID)
-		return err
-	})
 }
 
 func (r *MessageRepository) Delete(ctx context.Context, id string) error {
@@ -232,15 +169,6 @@ func scanMessage(row interface{ Scan(...any) error }) (conversation.Message, err
 		return conversation.Message{}, fmt.Errorf("parse message updated_at: %w", err)
 	}
 	return record, nil
-}
-
-func isInitialMessage(record conversation.Message) bool {
-	return (record.Role == conversation.MessageRoleUser && record.Status == conversation.MessageStatusCompleted && record.ErrorCode == "" && record.ErrorMessage == "") ||
-		(record.Role == conversation.MessageRoleAssistant && record.Status == conversation.MessageStatusStreaming)
-}
-
-func isTerminalStatus(status conversation.MessageStatus) bool {
-	return status == conversation.MessageStatusCompleted || status == conversation.MessageStatusCancelled || status == conversation.MessageStatusFailed
 }
 
 func requireAffected(result sql.Result, operation string) error {

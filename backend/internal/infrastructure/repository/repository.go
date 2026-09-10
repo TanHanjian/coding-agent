@@ -50,9 +50,7 @@ type ConversationRepository interface {
 }
 
 type MessageRepository interface {
-	Create(context.Context, conversation.Message) (conversation.Message, error)
 	GetByID(context.Context, string) (conversation.Message, error)
 	ListByConversation(context.Context, string) ([]conversation.Message, error)
-	UpdateAssistant(context.Context, conversation.Message) error
 	Delete(context.Context, string) error
 }

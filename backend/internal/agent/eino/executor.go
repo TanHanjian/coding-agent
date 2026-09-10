@@ -1,23 +1,25 @@
-package chat
+// Package eino 提供 Chat 应用层的 Eino Executor 适配器。
+package eino
 
 import (
 	"context"
 	"errors"
 
+	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/domainerr"
 )
 
-// EinoExecutor 是用户 Eino Runtime 的可编译占位实现。它不持有 SQLite 依赖，
+// Executor 是用户 Eino Runtime 的可编译占位实现。它不持有 SQLite 依赖，
 // 也不决定 Graph、提示词、工具或模型。
-type EinoExecutor struct {
-	builder RuntimeBuilder
+type Executor struct {
+	builder chat.RuntimeBuilder
 }
 
-func NewEinoExecutor(builder RuntimeBuilder) (*EinoExecutor, error) {
+func NewExecutor(builder chat.RuntimeBuilder) (*Executor, error) {
 	if builder == nil {
 		return nil, errors.New("chat executor: runtime builder is required")
 	}
-	return &EinoExecutor{builder: builder}, nil
+	return &Executor{builder: builder}, nil
 }
 
 // Stream 会在 Eino Graph 运行时完成后实现。
@@ -31,8 +33,8 @@ func NewEinoExecutor(builder RuntimeBuilder) (*EinoExecutor, error) {
 //
 // 此方法刻意返回 ErrNotImplemented，而不是发起模拟模型请求，避免未完成的
 // Graph 行为持久化伪造输出。
-func (e *EinoExecutor) Stream(context.Context, Request, TextSink) error {
+func (e *Executor) Stream(context.Context, chat.Request, chat.TextSink) error {
 	return domainerr.ErrNotImplemented
 }
 
-var _ Executor = (*EinoExecutor)(nil)
+var _ chat.Executor = (*Executor)(nil)

@@ -5,39 +5,7 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"interview-memory-agent/backend/internal/domain/domainerr"
 )
-
-// generationRun 把一次已持久化的聊天消息对与它独立的生成上下文关联起来。
-// 它在 Start 成功创建新消息对后构造；HTTP 请求结束不会取消 Context。
-type generationRun struct {
-	Context context.Context
-	Cancel  context.CancelFunc
-	Request Request
-	Sink    *bufferedTextSink
-}
-
-// generationTextWriter 是应用基础设施的唯一连接点。它不认识 HTTP：
-// CommitText 的后续实现负责批量写 Store，再调用 Hub.PublishText。
-type generationTextWriter struct {
-	store              TurnStore
-	hub                GenerationHub
-	assistantMessageID string
-}
-
-func newGenerationTextWriter(store TurnStore, hub GenerationHub, assistantMessageID string) *generationTextWriter {
-	return &generationTextWriter{store: store, hub: hub, assistantMessageID: assistantMessageID}
-}
-
-// CommitText 处理已经聚合完成的一批文本：先写 SQLite，再广播 Hub。
-// 它不维护 buffer，buffer 的生命周期和阈值策略由 bufferedTextSink 负责。
-func (w *generationTextWriter) CommitText(ctx context.Context, textBatch string) error {
-	if textBatch == "" {
-		return nil
-	}
-	return domainerr.ErrNotImplemented
-}
 
 // TextBufferPolicy 是一条 assistant Message 的内存缓存策略。字节数使用 UTF-8
 // 字节计数；它仅影响批量持久化频率，不改变发送给模型或前端的文本内容。
@@ -55,20 +23,15 @@ var DefaultTextBufferPolicy = TextBufferPolicy{
 // mu 保护缓存和定时器；flushMu 串行化定时 Flush、阈值 Flush 与终态 Flush 的
 // 提交动作，保证文本不会重复提交或乱序。
 type bufferedTextSink struct {
-	// writer 负责真实副作用：SQLite 追加成功后再向 Hub 广播 delta。
 	writer *generationTextWriter
 
-	// assistantMessageID 是这段内存缓存唯一对应的消息，不按 Conversation 共享。
 	assistantMessageID string
 	policy             TextBufferPolicy
 
-	// pending 保存尚未落库、尚未广播的一小段连续文本。
 	pending      strings.Builder
 	pendingBytes int
 	firstErr     error
 
-	// timer 在 pending 首次非空时启动，确保 MaxWait 是真正的最长等待时间，
-	// 而不是等到下一个 chunk 到来后才被动检查。
 	timer   *time.Timer
 	timerID uint64
 
@@ -113,10 +76,8 @@ func (s *bufferedTextSink) flush(ctx context.Context, expectedTimerID uint64) er
 		return nil
 	}
 
-	// 提交成功前不能清空 pending；否则数据库临时失败会丢掉最后一批文本。
 	text := s.pending.String()
 	s.stopTimerLocked()
-
 	if err := s.writer.CommitText(ctx, text); err != nil {
 		s.firstErr = err
 		return err
@@ -159,8 +120,6 @@ func (s *bufferedTextSink) startTimerLocked(ctx context.Context) {
 	s.timerID++
 	timerID := s.timerID
 	s.timer = time.AfterFunc(s.policy.MaxWait, func() {
-		// timer 没有同步调用方；flush 会保存错误，后续 WriteChunk 或终态 Flush
-		// 将返回同一个错误并让生成流程进入失败收尾。
 		_ = s.flush(ctx, timerID)
 	})
 }
@@ -170,7 +129,6 @@ func (s *bufferedTextSink) stopTimerLocked() {
 		s.timer.Stop()
 		s.timer = nil
 	}
-	// 使已经触发但仍等待锁的旧回调失效。
 	s.timerID++
 }
 

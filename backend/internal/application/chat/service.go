@@ -2,6 +2,9 @@ package chat
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"time"
 
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
@@ -27,21 +30,18 @@ type StartResult struct {
 	AssistantMessageID string
 }
 
-// Dependencies 有意采用端口式依赖。最终实现必须新增支持事务的会话操作，
-// 以保证创建用户 Message 和流式助手 Message 与幂等性检查具有原子性。
+// Dependencies 是 Chat 应用层协调一次生成所需的外部依赖。
 type Dependencies struct {
 	Executor    Executor
 	Registry    GenerationRegistry
 	Hub         GenerationHub
 	RunContexts RunContextFactory
-	// Store 是后续实现 Start/Cancel 时唯一允许写入聊天 Message 的端口。
-	// 本阶段保持可选，以便 HTTP 骨架能返回明确的未实现响应。
+	// Store 是 Chat Message 的唯一写入端口。
 	Store TurnStore
 }
 
-// SkeletonService 在用户实现 Eino 运行时和 UI Message Data Stream 编码器前，
-// 保留应用层的组装扩展点。generation.go 把 Start 的运行对象、文本 sink 与
-// 收尾职责显式拆开，避免 HTTP 连接进入 Eino 运行路径。
+// SkeletonService 保留 Eino 运行时和流编码器尚未完成时的应用层组装入口。
+// run.go、writer.go 和 buffer.go 将生成生命周期、文本提交与缓存策略分开。
 type SkeletonService struct {
 	executor    Executor
 	registry    GenerationRegistry
@@ -51,10 +51,44 @@ type SkeletonService struct {
 }
 
 func NewSkeletonService(deps Dependencies) (*SkeletonService, error) {
-	if deps.Executor == nil || deps.Registry == nil || deps.Hub == nil || deps.RunContexts == nil {
+	if deps.Executor == nil || deps.Registry == nil || deps.Hub == nil || deps.RunContexts == nil || deps.Store == nil {
 		return nil, domainerr.ErrInvalidInput
 	}
 	return &SkeletonService{executor: deps.Executor, registry: deps.Registry, hub: deps.Hub, runContexts: deps.RunContexts, store: deps.Store}, nil
+}
+
+func (s *SkeletonService) runGeneration(run generationRun) {
+	assistantMessageId := run.Request.AssistantMessage.ID
+	defer run.Cancel()
+	defer s.registry.Complete(assistantMessageId)
+	streamErr := s.executor.Stream(run.Context, run.Request, run.Sink)
+	finalizeCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(run.Context),
+		5*time.Second,
+	)
+	defer cancel()
+
+	if flushErr := run.Sink.Flush(finalizeCtx); streamErr == nil && flushErr != nil {
+		streamErr = flushErr
+	}
+
+	status := conversation.MessageStatusCompleted
+	if errors.Is(streamErr, context.Canceled) {
+		status = conversation.MessageStatusCancelled
+	} else if streamErr != nil {
+		status = conversation.MessageStatusFailed
+	}
+
+	finalMessage, err := s.store.FinishAssistant(finalizeCtx, FinishAssistantInput{
+		AssistantMessageID: assistantMessageId,
+		Status:             status,
+	})
+	if err != nil {
+		// 这里后续接日志；不能把未成功持久化的终态广播给前端。
+		return
+	}
+
+	s.hub.Complete(finalMessage)
 }
 
 // Start 的实现步骤：
@@ -65,8 +99,58 @@ func NewSkeletonService(deps Dependencies) (*SkeletonService, error) {
 //  4. 由 BeginTurnResult 组装 generationRun，并在 hub.Open 后注册助手 Message ID。
 //  5. 在 goroutine 中调用 executor.Stream(run.Context, run.Request, run.Sink)。
 //  6. goroutine 统一 flush sink、FinishAssistant、hub.Complete、registry.Complete。
-func (s *SkeletonService) Start(context.Context, StartInput) (StartResult, error) {
-	return StartResult{}, domainerr.ErrNotImplemented
+func (s *SkeletonService) Start(ctx context.Context, input StartInput) (StartResult, error) {
+	// 1. 基础校验
+	if strings.TrimSpace(input.ConversationID) == "" ||
+		strings.TrimSpace(input.ClientMessageID) == "" ||
+		strings.TrimSpace(input.Text) == "" {
+		return StartResult{}, domainerr.ErrInvalidInput
+	}
+
+	turn, err := s.store.BeginTurn(ctx, BeginTurnInput(input))
+	if err != nil {
+		return StartResult{}, err
+	}
+	result := StartResult{
+		ConversationID:     turn.Conversation.ID,
+		UserMessageID:      turn.UserMessage.ID,
+		AssistantMessageID: turn.AssistantMessage.ID,
+	}
+	if turn.Reused {
+		return result, nil
+	}
+	runctx, cancel := s.runContexts.New()
+	writer := newGenerationTextWriter(
+		s.store,
+		s.hub,
+		turn.AssistantMessage.ID,
+	)
+	sink := newBufferedTextSink(
+		writer,
+		turn.AssistantMessage.ID,
+		DefaultTextBufferPolicy,
+	)
+	run := generationRun{
+		Context: runctx,
+		Cancel:  cancel,
+		Request: Request{
+			Conversation:     turn.Conversation,
+			UserMessage:      turn.UserMessage,
+			AssistantMessage: turn.AssistantMessage,
+			History:          turn.History,
+		},
+		Sink: sink,
+	}
+	s.hub.Open(turn.AssistantMessage)
+	if !s.registry.Register(turn.AssistantMessage.ID, cancel) {
+		cancel()
+		return StartResult{}, domainerr.ErrConflict
+	}
+
+	// 5. 后台执行；Start 到这里立即返回给 HTTP。
+	go s.runGeneration(run)
+
+	return result, nil
 }
 
 // Subscribe 的实现步骤：

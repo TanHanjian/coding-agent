@@ -2,18 +2,17 @@ package sqlite_test
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"testing"
 	"time"
 
+	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
-	"interview-memory-agent/backend/internal/domain/domainerr"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
-func TestSQLiteMessagesKeepCancelledAssistantContent(t *testing.T) {
+func TestSQLiteConversationDeleteCascadesChatMessages(t *testing.T) {
 	ctx := context.Background()
 	db, err := storage.Open(ctx, filepath.Join(t.TempDir(), "conversation.db"))
 	if err != nil {
@@ -29,33 +28,33 @@ func TestSQLiteMessagesKeepCancelledAssistantContent(t *testing.T) {
 	if err := conversationRepo.Create(ctx, conversation.Conversation{ID: "c1", Title: "取消测试", CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	user, err := messageRepo.Create(ctx, conversation.Message{ID: "m-user", ConversationID: "c1", Role: conversation.MessageRoleUser, Content: "解释单调栈", Status: conversation.MessageStatusCompleted, CreatedAt: now, UpdatedAt: now})
+	chatRepo := sqlite.NewChatTurnRepository(db)
+	turn, err := chatRepo.BeginTurn(ctx, chat.BeginTurnInput{
+		ConversationID:  "c1",
+		ClientMessageID: "client-message-1",
+		Text:            "解释单调栈",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	assistant, err := messageRepo.Create(ctx, conversation.Message{ID: "m-assistant", ConversationID: "c1", Role: conversation.MessageRoleAssistant, Status: conversation.MessageStatusStreaming, CreatedAt: now, UpdatedAt: now})
-	if err != nil {
+	if turn.UserMessage.Sequence != 1 || turn.AssistantMessage.Sequence != 2 {
+		t.Fatalf("unexpected message sequences: user=%d assistant=%d", turn.UserMessage.Sequence, turn.AssistantMessage.Sequence)
+	}
+	if err := chatRepo.AppendAssistantText(ctx, turn.AssistantMessage.ID, "单调栈维护候选元素。"); err != nil {
 		t.Fatal(err)
 	}
-	if user.Sequence != 1 || assistant.Sequence != 2 {
-		t.Fatalf("unexpected message sequences: user=%d assistant=%d", user.Sequence, assistant.Sequence)
-	}
-	assistant.Content = "单调栈维护候选元素。"
-	assistant.Status = conversation.MessageStatusCancelled
-	assistant.UpdatedAt = now.Add(time.Second)
-	if err := messageRepo.UpdateAssistant(ctx, assistant); err != nil {
+	if _, err := chatRepo.FinishAssistant(ctx, chat.FinishAssistantInput{
+		AssistantMessageID: turn.AssistantMessage.ID,
+		Status:             conversation.MessageStatusCancelled,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := messageRepo.ListByConversation(ctx, "c1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(messages) != 2 || messages[1].Status != conversation.MessageStatusCancelled || messages[1].Content != assistant.Content {
+	if len(messages) != 2 || messages[1].Status != conversation.MessageStatusCancelled || messages[1].Content != "单调栈维护候选元素。" {
 		t.Fatalf("cancelled output was not preserved: %+v", messages)
-	}
-	assistant.Status = conversation.MessageStatusCompleted
-	if err := messageRepo.UpdateAssistant(ctx, assistant); !errors.Is(err, domainerr.ErrInvalidInput) {
-		t.Fatalf("expected terminal message update to fail, got %v", err)
 	}
 	if err := conversationRepo.Delete(ctx, "c1"); err != nil {
 		t.Fatal(err)

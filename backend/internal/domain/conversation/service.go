@@ -17,10 +17,8 @@ type Service interface {
 	ListConversations(context.Context) ([]Conversation, error)
 	UpdateConversation(context.Context, string, UpdateConversationInput) (Conversation, error)
 	DeleteConversation(context.Context, string) error
-	CreateMessage(context.Context, string, CreateMessageInput) (Message, error)
 	GetMessage(context.Context, string) (Message, error)
 	ListMessages(context.Context, string) ([]Message, error)
-	UpdateAssistantMessage(context.Context, string, UpdateAssistantMessageInput) (Message, error)
 	DeleteMessage(context.Context, string) error
 }
 
@@ -33,10 +31,8 @@ type ConversationStore interface {
 }
 
 type MessageStore interface {
-	Create(context.Context, Message) (Message, error)
 	GetByID(context.Context, string) (Message, error)
 	ListByConversation(context.Context, string) ([]Message, error)
-	UpdateAssistant(context.Context, Message) error
 	Delete(context.Context, string) error
 }
 
@@ -116,33 +112,6 @@ func (s service) DeleteConversation(ctx context.Context, id string) error {
 	return s.conversations.Delete(ctx, strings.TrimSpace(id))
 }
 
-func (s service) CreateMessage(ctx context.Context, conversationID string, input CreateMessageInput) (Message, error) {
-	if err := requireID(conversationID); err != nil {
-		return Message{}, err
-	}
-	if s.messages == nil {
-		return Message{}, errors.New("conversation service: message store is not configured")
-	}
-	if input.Role != MessageRoleUser && input.Role != MessageRoleAssistant {
-		return Message{}, domainerr.ErrInvalidInput
-	}
-	if input.Role == MessageRoleUser && strings.TrimSpace(input.Content) == "" {
-		return Message{}, domainerr.ErrInvalidInput
-	}
-	id, err := newID("m")
-	if err != nil {
-		return Message{}, err
-	}
-	now := time.Now().UTC()
-	status := MessageStatusCompleted
-	content := input.Content
-	if input.Role == MessageRoleAssistant {
-		status = MessageStatusStreaming
-		content = ""
-	}
-	return s.messages.Create(ctx, Message{ID: id, ConversationID: strings.TrimSpace(conversationID), Role: input.Role, Content: content, Status: status, CreatedAt: now, UpdatedAt: now})
-}
-
 func (s service) GetMessage(ctx context.Context, id string) (Message, error) {
 	if err := requireID(id); err != nil {
 		return Message{}, err
@@ -166,34 +135,6 @@ func (s service) ListMessages(ctx context.Context, conversationID string) ([]Mes
 	return s.messages.ListByConversation(ctx, strings.TrimSpace(conversationID))
 }
 
-func (s service) UpdateAssistantMessage(ctx context.Context, id string, input UpdateAssistantMessageInput) (Message, error) {
-	if err := requireID(id); err != nil || input.Content == nil || !isTerminalStatus(input.Status) {
-		return Message{}, domainerr.ErrInvalidInput
-	}
-	if input.Status != MessageStatusFailed && (input.ErrorCode != "" || input.ErrorMessage != "") {
-		return Message{}, domainerr.ErrInvalidInput
-	}
-	if s.messages == nil {
-		return Message{}, errors.New("conversation service: message store is not configured")
-	}
-	record, err := s.messages.GetByID(ctx, strings.TrimSpace(id))
-	if err != nil {
-		return Message{}, err
-	}
-	if record.Role != MessageRoleAssistant || record.Status != MessageStatusStreaming {
-		return Message{}, domainerr.ErrInvalidInput
-	}
-	record.Content = *input.Content
-	record.Status = input.Status
-	record.ErrorCode = input.ErrorCode
-	record.ErrorMessage = input.ErrorMessage
-	record.UpdatedAt = time.Now().UTC()
-	if err := s.messages.UpdateAssistant(ctx, record); err != nil {
-		return Message{}, err
-	}
-	return record, nil
-}
-
 func (s service) DeleteMessage(ctx context.Context, id string) error {
 	if err := requireID(id); err != nil {
 		return err
@@ -209,10 +150,6 @@ func requireID(id string) error {
 		return domainerr.ErrInvalidInput
 	}
 	return nil
-}
-
-func isTerminalStatus(status MessageStatus) bool {
-	return status == MessageStatusCompleted || status == MessageStatusCancelled || status == MessageStatusFailed
 }
 
 func newID(prefix string) (string, error) {

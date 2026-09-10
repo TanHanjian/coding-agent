@@ -1,4 +1,5 @@
-package conversation
+// Package httpconversation 提供 Conversation 用例的 HTTP 传输适配器。
+package httpconversation
 
 import (
 	"encoding/json"
@@ -7,26 +8,25 @@ import (
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
+	conversation "interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
 	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
-func RegisterRoutes(r chi.Router, service Service) {
+func RegisterRoutes(r chi.Router, service conversation.Service) {
 	r.Post("/conversations", CreateConversationHandler(service))
 	r.Get("/conversations", ListConversationsHandler(service))
 	r.Get("/conversations/{conversationID}", GetConversationHandler(service))
 	r.Patch("/conversations/{conversationID}", UpdateConversationHandler(service))
 	r.Delete("/conversations/{conversationID}", DeleteConversationHandler(service))
-	r.Post("/conversations/{conversationID}/messages", CreateMessageHandler(service))
 	r.Get("/conversations/{conversationID}/messages", ListMessagesHandler(service))
 	r.Get("/messages/{messageID}", GetMessageHandler(service))
-	r.Patch("/messages/{messageID}", UpdateAssistantMessageHandler(service))
 	r.Delete("/messages/{messageID}", DeleteMessageHandler(service))
 }
 
-func CreateConversationHandler(service Service) http.HandlerFunc {
+func CreateConversationHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var input CreateConversationInput
+		var input conversation.CreateConversationInput
 		if err := decodeJSON(r, &input); err != nil {
 			invalid(w, r)
 			return
@@ -40,7 +40,7 @@ func CreateConversationHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func ListConversationsHandler(service Service) http.HandlerFunc {
+func ListConversationsHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		records, err := service.ListConversations(r.Context())
 		if err != nil {
@@ -51,7 +51,7 @@ func ListConversationsHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func GetConversationHandler(service Service) http.HandlerFunc {
+func GetConversationHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record, err := service.GetConversation(r.Context(), chi.URLParam(r, "conversationID"))
 		if err != nil {
@@ -62,9 +62,9 @@ func GetConversationHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func UpdateConversationHandler(service Service) http.HandlerFunc {
+func UpdateConversationHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var input UpdateConversationInput
+		var input conversation.UpdateConversationInput
 		if err := decodeJSON(r, &input); err != nil {
 			invalid(w, r)
 			return
@@ -78,7 +78,7 @@ func UpdateConversationHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func DeleteConversationHandler(service Service) http.HandlerFunc {
+func DeleteConversationHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := service.DeleteConversation(r.Context(), chi.URLParam(r, "conversationID")); err != nil {
 			domainError(w, r, err, "删除会话失败")
@@ -88,23 +88,7 @@ func DeleteConversationHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func CreateMessageHandler(service Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var input CreateMessageInput
-		if err := decodeJSON(r, &input); err != nil {
-			invalid(w, r)
-			return
-		}
-		record, err := service.CreateMessage(r.Context(), chi.URLParam(r, "conversationID"), input)
-		if err != nil {
-			domainError(w, r, err, "创建消息失败")
-			return
-		}
-		writeJSON(w, http.StatusCreated, record)
-	}
-}
-
-func ListMessagesHandler(service Service) http.HandlerFunc {
+func ListMessagesHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		records, err := service.ListMessages(r.Context(), chi.URLParam(r, "conversationID"))
 		if err != nil {
@@ -115,7 +99,7 @@ func ListMessagesHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func GetMessageHandler(service Service) http.HandlerFunc {
+func GetMessageHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		record, err := service.GetMessage(r.Context(), chi.URLParam(r, "messageID"))
 		if err != nil {
@@ -126,23 +110,7 @@ func GetMessageHandler(service Service) http.HandlerFunc {
 	}
 }
 
-func UpdateAssistantMessageHandler(service Service) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		var input UpdateAssistantMessageInput
-		if err := decodeJSON(r, &input); err != nil {
-			invalid(w, r)
-			return
-		}
-		record, err := service.UpdateAssistantMessage(r.Context(), chi.URLParam(r, "messageID"), input)
-		if err != nil {
-			domainError(w, r, err, "更新助手消息失败")
-			return
-		}
-		writeJSON(w, http.StatusOK, record)
-	}
-}
-
-func DeleteMessageHandler(service Service) http.HandlerFunc {
+func DeleteMessageHandler(service conversation.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if err := service.DeleteMessage(r.Context(), chi.URLParam(r, "messageID")); err != nil {
 			domainError(w, r, err, "删除消息失败")

@@ -50,15 +50,3 @@ type CreateConversationInput struct {
 type UpdateConversationInput struct {
 	Title *string `json:"title"`
 }
-
-type CreateMessageInput struct {
-	Role    MessageRole `json:"role"`
-	Content string      `json:"content"`
-}
-
-type UpdateAssistantMessageInput struct {
-	Content      *string       `json:"content"`
-	Status       MessageStatus `json:"status"`
-	ErrorCode    string        `json:"errorCode"`
-	ErrorMessage string        `json:"errorMessage"`
-}

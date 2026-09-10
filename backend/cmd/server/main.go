@@ -9,14 +9,17 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"interview-memory-agent/backend/internal/agent/eino"
+	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/answer"
-	"interview-memory-agent/backend/internal/domain/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/domain/review"
 	"interview-memory-agent/backend/internal/infrastructure/config"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
+	"interview-memory-agent/backend/internal/transport/httpchat"
+	"interview-memory-agent/backend/internal/transport/httpconversation"
 	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
@@ -59,7 +62,7 @@ func main() {
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
 	chatService, err := chat.NewSkeletonService(chat.Dependencies{
-		Executor:    chat.NewUnsupportedExecutor(),
+		Executor:    eino.NewUnsupportedExecutor(),
 		Registry:    chat.NewMemoryGenerationRegistry(),
 		Hub:         chat.NewMemoryGenerationHub(),
 		RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
@@ -76,8 +79,8 @@ func main() {
 		question.RegisterRoutes(r, questionService)
 		answer.RegisterRoutes(r, answerService)
 		review.RegisterRoutes(r, reviewService)
-		conversation.RegisterRoutes(r, conversationService)
-		chat.RegisterRoutes(r, chatService)
+		httpconversation.RegisterRoutes(r, conversationService)
+		httpchat.RegisterRoutes(r, chatService)
 	})
 	handler := httpx.WithRequestID(httpx.Recover(requestLogger(router)))
 	server := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
