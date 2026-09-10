@@ -18,8 +18,11 @@ import (
 	"interview-memory-agent/backend/internal/infrastructure/config"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
+	"interview-memory-agent/backend/internal/transport/httpanswer"
 	"interview-memory-agent/backend/internal/transport/httpchat"
 	"interview-memory-agent/backend/internal/transport/httpconversation"
+	"interview-memory-agent/backend/internal/transport/httpquestion"
+	"interview-memory-agent/backend/internal/transport/httpreview"
 	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
@@ -76,9 +79,9 @@ func main() {
 	router.Get("/healthz", healthHandler(db).ServeHTTP)
 	router.Route("/api/v1", func(r chi.Router) {
 		r.Get("/health", healthHandler(db).ServeHTTP)
-		question.RegisterRoutes(r, questionService)
-		answer.RegisterRoutes(r, answerService)
-		review.RegisterRoutes(r, reviewService)
+		httpquestion.RegisterRoutes(r, questionService)
+		httpanswer.RegisterRoutes(r, answerService)
+		httpreview.RegisterRoutes(r, reviewService)
 		httpconversation.RegisterRoutes(r, conversationService)
 		httpchat.RegisterRoutes(r, chatService)
 	})

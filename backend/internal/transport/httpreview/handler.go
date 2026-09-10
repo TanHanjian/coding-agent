@@ -1,4 +1,5 @@
-package answer
+// Package httpreview 提供 Review 用例的 HTTP 传输适配器。
+package httpreview
 
 import (
 	"encoding/json"
@@ -8,59 +9,60 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"interview-memory-agent/backend/internal/domain/domainerr"
+	review "interview-memory-agent/backend/internal/domain/review"
 	"interview-memory-agent/backend/internal/transport/httpx"
 )
 
-func RegisterRoutes(r chi.Router, service Service) {
-	r.Post("/questions/{questionID}/answers", CreateHandler(service))
-	r.Get("/questions/{questionID}/answers", ListHandler(service))
-	r.Patch("/answers/{answerID}", UpdateHandler(service))
-	r.Delete("/answers/{answerID}", DeleteHandler(service))
+func RegisterRoutes(r chi.Router, service review.Service) {
+	r.Post("/questions/{questionID}/reviews", CreateHandler(service))
+	r.Get("/questions/{questionID}/reviews", ListHandler(service))
+	r.Patch("/reviews/{reviewID}", UpdateHandler(service))
+	r.Delete("/reviews/{reviewID}", DeleteHandler(service))
 }
-func CreateHandler(service Service) http.HandlerFunc {
+func CreateHandler(service review.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var input CreateInput
+		var input review.CreateInput
 		if err := decodeJSON(r, &input); err != nil {
 			invalid(w, r)
 			return
 		}
 		record, err := service.Create(r.Context(), chi.URLParam(r, "questionID"), input)
 		if err != nil {
-			domainError(w, r, err, "创建作答失败")
+			domainError(w, r, err, "创建复盘失败")
 			return
 		}
 		writeJSON(w, http.StatusCreated, record)
 	}
 }
-func ListHandler(service Service) http.HandlerFunc {
+func ListHandler(service review.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		items, err := service.List(r.Context(), chi.URLParam(r, "questionID"))
 		if err != nil {
-			domainError(w, r, err, "读取作答失败")
+			domainError(w, r, err, "读取复盘失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, items)
 	}
 }
-func UpdateHandler(service Service) http.HandlerFunc {
+func UpdateHandler(service review.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var input UpdateInput
+		var input review.UpdateInput
 		if err := decodeJSON(r, &input); err != nil {
 			invalid(w, r)
 			return
 		}
-		record, err := service.Update(r.Context(), chi.URLParam(r, "answerID"), input)
+		record, err := service.Update(r.Context(), chi.URLParam(r, "reviewID"), input)
 		if err != nil {
-			domainError(w, r, err, "更新作答失败")
+			domainError(w, r, err, "更新复盘失败")
 			return
 		}
 		writeJSON(w, http.StatusOK, record)
 	}
 }
-func DeleteHandler(service Service) http.HandlerFunc {
+func DeleteHandler(service review.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if err := service.Delete(r.Context(), chi.URLParam(r, "answerID")); err != nil {
-			domainError(w, r, err, "删除作答失败")
+		if err := service.Delete(r.Context(), chi.URLParam(r, "reviewID")); err != nil {
+			domainError(w, r, err, "删除复盘失败")
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)

@@ -13,9 +13,9 @@ import (
 // Service 将协调已持久化的 Message、运行时注册表、执行器和 AI SDK 流编码器。
 // HTTP 处理器必须依赖此接口，而非直接依赖 Eino。
 type Service interface {
-	Start(context.Context, StartInput) (StartResult, error)
-	Subscribe(context.Context, string) (GenerationSubscription, error)
-	Cancel(context.Context, string) (conversation.Message, error)
+	Start(ctx context.Context, input StartInput) (StartResult, error)
+	Subscribe(ctx context.Context, assistantMessageID string) (GenerationSubscription, error)
+	Cancel(ctx context.Context, assistantMessageID string) (conversation.Message, error)
 }
 
 type StartInput struct {
@@ -157,8 +157,38 @@ func (s *SkeletonService) Start(ctx context.Context, input StartInput) (StartRes
 //  1. 读取 Store.GetMessage；非 streaming 消息返回只含最终 Snapshot 的订阅。
 //  2. streaming 消息调用 Hub.Subscribe；Hub 原子返回 Snapshot 和 Updates。
 //  3. HTTP 层先编码 Snapshot（替换全文），再编码 Updates（追加 delta/终态）。
-func (s *SkeletonService) Subscribe(context.Context, string) (GenerationSubscription, error) {
-	return GenerationSubscription{}, domainerr.ErrNotImplemented
+func (s *SkeletonService) Subscribe(ctx context.Context, assistantMessageID string) (GenerationSubscription, error) {
+	message, err := s.store.GetMessage(ctx, assistantMessageID)
+	if err != nil {
+		return GenerationSubscription{}, err
+	}
+	if message.Status != "streaming" {
+		return GenerationSubscription{
+			Snapshot: GenerationSnapshot{
+				Content:            message.Content,
+				AssistantMessageID: message.ID,
+				Status:             message.Status,
+			},
+			Updates: nil,
+			close:   func() {},
+		}, nil
+	}
+	subscription, ok := s.hub.Subscribe(assistantMessageID)
+	if ok {
+		return subscription, nil
+	}
+
+	// Hub 只保存当前进程内仍在运行的生成。若运行已结束或服务重启导致
+	// 内存状态丢失，返回 Store 中的最后检查点，调用方不应继续等待 Updates。
+	return GenerationSubscription{
+		Snapshot: GenerationSnapshot{
+			Content:            message.Content,
+			AssistantMessageID: message.ID,
+			Status:             message.Status,
+		},
+		Updates: nil,
+		close:   func() {},
+	}, nil
 }
 
 // Cancel 的实现步骤：
@@ -167,8 +197,26 @@ func (s *SkeletonService) Subscribe(context.Context, string) (GenerationSubscrip
 //  3. generation goroutine 观察 ctx.Done 后统一 flush、FinishAssistant(cancelled)、
 //     hub.Complete；这样取消和自然完成只有一个终态胜出。
 //  4. Cancel 等待或重新读取最终 Message 后返回。
-func (s *SkeletonService) Cancel(context.Context, string) (conversation.Message, error) {
-	return conversation.Message{}, domainerr.ErrNotImplemented
+func (s *SkeletonService) Cancel(ctx context.Context, assistantMessageID string) (conversation.Message, error) {
+	message, err := s.store.GetMessage(ctx, assistantMessageID)
+	if err != nil {
+		return message, err
+	}
+	if message.Status != conversation.MessageStatusStreaming {
+		return message, nil
+	}
+	done, active := s.registry.Cancel(assistantMessageID)
+	if !active {
+		// 生成可能恰好已完成，或服务重启后已丢失运行时取消句柄。
+		return s.store.GetMessage(ctx, assistantMessageID)
+	}
+
+	select {
+	case <-done:
+		return s.store.GetMessage(ctx, assistantMessageID)
+	case <-ctx.Done():
+		return conversation.Message{}, ctx.Err()
+	}
 }
 
 var _ Service = (*SkeletonService)(nil)

@@ -2,15 +2,10 @@ package question
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"reflect"
-	"strings"
 	"testing"
 
-	"github.com/go-chi/chi/v5"
 	"github.com/go-playground/validator/v10"
 )
 
@@ -130,88 +125,5 @@ func TestValidateEnumValues(t *testing.T) {
 		if !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("expected invalid input, got %v", err)
 		}
-	}
-}
-
-func TestCreateQuestionHandler(t *testing.T) {
-	var saved QuestionRecord
-	service := NewQuestionService(questionCreatorFunc(func(_ context.Context, record QuestionRecord) error {
-		saved = record
-		return nil
-	}))
-	handler := CreateQuestionHandler(service)
-
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/questions", strings.NewReader(`{
-		"title":" Two Sum ",
-		"type":"algorithm",
-		"bodyMarkdown":"Find two numbers.",
-		"tags":[" array ","array"]
-	}`))
-	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusCreated {
-		t.Fatalf("expected status 201, got %d: %s", response.Code, response.Body.String())
-	}
-	var got QuestionRecord
-	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got.ID == "" || got.Title != "Two Sum" || !reflect.DeepEqual(got.Tags, []string{"array"}) {
-		t.Fatalf("unexpected response: %+v", got)
-	}
-	if !reflect.DeepEqual(saved, got) {
-		t.Fatalf("saved record differs from response: saved=%+v response=%+v", saved, got)
-	}
-}
-
-func TestCreateQuestionHandlerRejectsInvalidJSONAndInput(t *testing.T) {
-	service := NewQuestionService(questionCreatorFunc(func(context.Context, QuestionRecord) error {
-		t.Fatal("invalid request reached repository")
-		return nil
-	}))
-	handler := CreateQuestionHandler(service)
-	for _, body := range []string{
-		`{"title":`,
-		`{"title":"","type":"algorithm","bodyMarkdown":"body"}`,
-		`{"title":"title","type":"algorithm","bodyMarkdown":"body","unexpected":true}`,
-	} {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/questions", strings.NewReader(body)))
-		if response.Code != http.StatusBadRequest {
-			t.Fatalf("body %s: expected status 400, got %d", body, response.Code)
-		}
-	}
-}
-
-func TestGetQuestionHandler(t *testing.T) {
-	service := NewQuestionServiceWithDependencies(QuestionServiceDependencies{
-		DetailReader: questionDetailReaderFunc(func(_ context.Context, id string) (QuestionDetail, error) {
-			if id == "missing" {
-				return QuestionDetail{}, ErrNotFound
-			}
-			return QuestionDetail{Question: QuestionRecord{ID: id, Title: "Two Sum", Type: QuestionTypeAlgorithm, BodyMarkdown: "body"}, Answers: []AnswerAttempt{}, Reviews: []MistakeReview{}, Attachments: []Attachment{}}, nil
-		}),
-	})
-	router := chi.NewRouter()
-	RegisterQuestionRoutes(router, service)
-
-	response := httptest.NewRecorder()
-	router.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/questions/q1", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected status 200, got %d: %s", response.Code, response.Body.String())
-	}
-	var got QuestionDetail
-	if err := json.NewDecoder(response.Body).Decode(&got); err != nil {
-		t.Fatal(err)
-	}
-	if got.Question.ID != "q1" || got.Question.Title != "Two Sum" {
-		t.Fatalf("unexpected detail: %+v", got)
-	}
-
-	missing := httptest.NewRecorder()
-	router.ServeHTTP(missing, httptest.NewRequest(http.MethodGet, "/questions/missing", nil))
-	if missing.Code != http.StatusNotFound {
-		t.Fatalf("expected status 404, got %d: %s", missing.Code, missing.Body.String())
 	}
 }

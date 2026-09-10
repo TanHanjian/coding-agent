@@ -1,6 +1,10 @@
 package storage
 
-import "path/filepath"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+)
 
 type Paths struct {
 	Root        string
@@ -25,3 +29,10 @@ func (p Paths) Ensure() error {
 }
 
 func ensureDirectory(path string) error { return mkdirAll(path) }
+
+func mkdirAll(path string) error {
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return fmt.Errorf("create data directory %q: %w", path, err)
+	}
+	return nil
+}
