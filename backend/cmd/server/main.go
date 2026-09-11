@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -10,11 +11,13 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"interview-memory-agent/backend/internal/agent/eino"
+	"interview-memory-agent/backend/internal/agent/interview"
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/answer"
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/domain/review"
+	agentopenai "interview-memory-agent/backend/internal/infrastructure/agent/openai"
 	"interview-memory-agent/backend/internal/infrastructure/config"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
@@ -48,6 +51,11 @@ func main() {
 		slog.Error("run migrations", "error", err)
 		os.Exit(1)
 	}
+	chatExecutor, err := newChatExecutor(context.Background(), cfg)
+	if err != nil {
+		slog.Error("configure chat executor", "error", err)
+		os.Exit(1)
+	}
 	questionRepository := sqlite.NewQuestionRepository(db)
 	answerRepository := sqlite.NewAnswerRepository(db)
 	reviewRepository := sqlite.NewReviewRepository(db)
@@ -65,7 +73,7 @@ func main() {
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
 	chatService, err := chat.NewSkeletonService(chat.Dependencies{
-		Executor:    eino.NewUnsupportedExecutor(),
+		Executor:    chatExecutor,
 		Registry:    chat.NewMemoryGenerationRegistry(),
 		Hub:         chat.NewMemoryGenerationHub(),
 		RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
@@ -92,6 +100,27 @@ func main() {
 		slog.Error("server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+// newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
+// 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
+func newChatExecutor(ctx context.Context, cfg config.Config) (chat.Executor, error) {
+	if err := cfg.ValidateForChat(); err != nil {
+		return nil, fmt.Errorf("validate chat configuration: %w", err)
+	}
+	chatModel, err := agentopenai.NewChatModel(ctx, cfg.OpenAI)
+	if err != nil {
+		return nil, fmt.Errorf("create chat model: %w", err)
+	}
+	runtimeBuilder, err := interview.NewBuilder(chatModel)
+	if err != nil {
+		return nil, fmt.Errorf("create interview runtime builder: %w", err)
+	}
+	chatExecutor, err := eino.NewExecutor(runtimeBuilder)
+	if err != nil {
+		return nil, fmt.Errorf("create chat executor: %w", err)
+	}
+	return chatExecutor, nil
 }
 
 func healthHandler(db *storage.DB) http.Handler {

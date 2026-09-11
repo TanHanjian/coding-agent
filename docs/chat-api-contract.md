@@ -10,7 +10,7 @@
 - 前端使用 AI SDK UI Message Data Stream 协议，而不是 plain text stream。该协议可承载后续的引用、Tool 状态与完成事件。
 - `POST /api/v1/chat` 是唯一触发模型执行的入口。已有 Message CRUD 仅用于历史管理，不得由前端用来伪造助手终态消息。
 - 同一个 Conversation 同时最多只能有一条 `streaming` 的助手 Message；新的聊天请求必须收到冲突错误，不能并行写入同一会话。
-- 首版不支持重新连接到同一条流。浏览器断开或用户取消后，运行停止，前端通过消息历史恢复已经持久化的内容。
+- 首版支持同一进程内通过 `GET /api/v1/chat/{assistantMessageId}/stream` 重新订阅；服务端用 snapshot + delta 补齐当前可见文本。服务重启后不能继续同一上游请求，前端读取最后持久化内容并提供重新生成。
 
 ## 2. 会话与历史接口
 
@@ -65,7 +65,7 @@
 响应头：
 
 ```text
-Content-Type: text/plain; charset=utf-8
+Content-Type: text/event-stream; charset=utf-8
 x-vercel-ai-ui-message-stream: v1
 Cache-Control: no-cache, no-transform
 X-Conversation-ID: c_01...
@@ -79,10 +79,10 @@ X-Assistant-Message-ID: m_02...
 
 ## 3.1 当前代码骨架
 
-- `internal/transport/httpchat/handler.go` 负责 HTTP 路由与请求 DTO 校验；`internal/application/chat/` 负责 Chat 用例编排。SSE 编码仍待实现，不能将当前 Handler 视为完整流式接口。
+- `internal/transport/httpchat/handler.go` 负责 HTTP 路由、请求 DTO 校验、订阅与 AI SDK UI Message Stream v1 编码；`internal/application/chat/` 负责 Chat 用例编排和后台生成生命周期。
 - `TurnStore` 固定了后续 SQLite 实现必须提供的原子消息对创建/幂等、文本追加和终态更新能力；`0004_chat_turns.sql` 已提供 `client_message_id` 与会话内唯一约束，普通 Message CRUD 不承担这些并发语义。
-- `ResponseSink` 隔离 HTTP Data Stream 编码。实现时只能在 `Start` 成功持久化消息对之后发送流响应；不得由 Eino Executor 直接操作 HTTP。
-- `UnsupportedExecutor` 仅用于当前服务装配。实现 `RuntimeBuilder` 后，将它替换为 `EinoExecutor`；不要在该占位类型中加入模型调用。
+- `GenerationHub` 隔离 Eino 输出和 HTTP Data Stream 编码。只能在 `Start` 成功持久化消息对之后订阅并发送流响应；Eino Executor 不得直接操作 HTTP。
+- 应用装配根创建 OpenAI ChatModel、面试 Graph Builder 和 Eino Executor，并把 Executor 注入 Chat Service；模型调用不进入 Handler。
 
 ## 3.2 生成运行与 SSE 订阅分离
 
@@ -114,7 +114,7 @@ X-Assistant-Message-ID: m_02...
 | Message 不存在 | `404` | `not_found`。 |
 | Message 已完成或失败 | `409` | `generation_not_active`，响应包含当前 Message。 |
 
-浏览器主动中断 `/chat` 响应等同于取消：服务端停止本次执行、保存最后文本并将 Message 标记为 `cancelled`。首版不会在浏览器重连后继续同一生成。
+浏览器主动中断 `/chat` 响应只会结束该订阅；服务端继续运行并持久化生成结果。用户需要停止生成时，前端显式调用取消接口；同进程内可通过 stream 接口重新订阅。
 
 ## 5. 错误与前端状态
 
@@ -132,7 +132,7 @@ X-Assistant-Message-ID: m_02...
 ## 6. 明确延后
 
 - `POST .../regenerate`：需要先定义新助手 Message 与原用户 Message 的关联。
-- `GET /api/v1/chat/{id}/stream`：需要 `agent_turn_events` 或兼容的字节流日志，才能安全重连。
+- 跨进程精确事件回放：需要 `agent_turn_events` 或兼容的字节流日志；当前只提供单进程 snapshot + delta 重订阅。
 - Tool / citation / reasoning UI part：需要 Eino Tool 与 RAG 契约先定稿。
 - 自动续跑：需要 checkpoint、幂等 Tool 和持久化 Run 状态。
 

@@ -3,6 +3,7 @@ package chat
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -77,6 +78,11 @@ func (s *SkeletonService) runGeneration(run generationRun) {
 		status = conversation.MessageStatusCancelled
 	} else if streamErr != nil {
 		status = conversation.MessageStatusFailed
+		slog.Error("chat generation failed",
+			"conversation_id", run.Request.Conversation.ID,
+			"assistant_message_id", assistantMessageId,
+			"error", streamErr,
+		)
 	}
 
 	finalMessage, err := s.store.FinishAssistant(finalizeCtx, FinishAssistantInput{
@@ -84,7 +90,13 @@ func (s *SkeletonService) runGeneration(run generationRun) {
 		Status:             status,
 	})
 	if err != nil {
-		// 这里后续接日志；不能把未成功持久化的终态广播给前端。
+		slog.Error("persist chat terminal message failed",
+			"conversation_id", run.Request.Conversation.ID,
+			"assistant_message_id", assistantMessageId,
+			"status", status,
+			"error", err,
+		)
+		// 不能把未成功持久化的终态广播给前端。
 		return
 	}
 

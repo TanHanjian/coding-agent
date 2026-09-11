@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"interview-memory-agent/backend/internal/infrastructure/config"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
 	"interview-memory-agent/backend/internal/transport/httpx"
 )
@@ -28,5 +29,12 @@ func TestHealthHandler(t *testing.T) {
 	}
 	if response.Header().Get(httpx.RequestIDHeader) == "" {
 		t.Fatal("expected request ID")
+	}
+}
+
+func TestNewChatExecutorRequiresChatConfiguration(t *testing.T) {
+	_, err := newChatExecutor(t.Context(), config.Config{})
+	if err == nil {
+		t.Fatal("expected missing chat configuration error")
 	}
 }

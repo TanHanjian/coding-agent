@@ -4,18 +4,21 @@ package httpchat
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
 
-	"github.com/go-chi/chi/v5"
 	chat "interview-memory-agent/backend/internal/application/chat"
+	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
 	"interview-memory-agent/backend/internal/transport/httpx"
+
+	"github.com/go-chi/chi/v5"
 )
 
-// RegisterRoutes 注册聊天入口。当前 SkeletonService 返回 501；路由、请求形状与
-// 错误边界在 Agent/SQLite 逻辑实现前就已固定。
+// RegisterRoutes 注册聊天入口。Handler 只负责 HTTP 请求校验、订阅和 AI SDK
+// UI Message Stream 编码；生成生命周期仍由 chat.Service 管理。
 func RegisterRoutes(r chi.Router, service chat.Service) {
 	r.Post("/chat", StartHandler(service))
 	r.Get("/chat/{assistantMessageID}/stream", ResumeStreamHandler(service))
@@ -45,23 +48,174 @@ func StartHandler(service chat.Service) http.HandlerFunc {
 			writeChatError(w, r, err, "聊天请求无效")
 			return
 		}
+
 		result, err := service.Start(r.Context(), input)
 		if err != nil {
 			writeChatError(w, r, err, "暂时无法开始生成")
 			return
 		}
-		// 实现后在这里订阅 result.AssistantMessageID 并编码 UI Message Data Stream；
-		// 浏览器刷新使用下方 GET 路由订阅同一条运行。
-		_ = result
+		sub, err := service.Subscribe(r.Context(), result.AssistantMessageID)
+		if err != nil {
+			writeChatError(w, r, err, "暂时无法订阅生成")
+			return
+		}
+		defer sub.Close()
+
+		w.Header().Set("X-Conversation-ID", result.ConversationID)
+		w.Header().Set("X-User-Message-ID", result.UserMessageID)
+		w.Header().Set("X-Assistant-Message-ID", result.AssistantMessageID)
+		streamSubscription(w, r, sub)
 	}
 }
 
 func ResumeStreamHandler(service chat.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		// TODO: 调用 service.Subscribe。先把 subscription.Snapshot 编码为“替换
-		// 助手全文”的 UI Message 事件，再编码 subscription.Updates 的 delta/terminal。
-		// 当前禁止用自定义 SSE 冒充该协议，因此骨架明确返回 501。
-		writeChatError(w, r, domainerr.ErrNotImplemented, "流式恢复尚未实现")
+		subscription, err := service.Subscribe(r.Context(), chi.URLParam(r, "assistantMessageID"))
+		if err != nil {
+			writeChatError(w, r, err, "暂时无法恢复生成")
+			return
+		}
+		defer subscription.Close()
+
+		w.Header().Set("X-Assistant-Message-ID", subscription.Snapshot.AssistantMessageID)
+		streamSubscription(w, r, subscription)
+	}
+}
+
+const (
+	uiMessageStreamVersionHeader = "x-vercel-ai-ui-message-stream"
+	uiMessageStreamVersion       = "v1"
+	streamUnavailableErrorText   = "生成连接已中断，请重新生成"
+	streamFailedErrorText        = "生成失败，请重新生成"
+)
+
+// streamSubscription 将 Chat 应用层的 snapshot + delta 订阅编码为 AI SDK UI
+// Message Stream v1。它只结束浏览器订阅；r.Context() 取消不会传递给后台生成。
+func streamSubscription(w http.ResponseWriter, r *http.Request, subscription chat.GenerationSubscription) {
+	stream := uiMessageStreamWriter{response: w}
+	stream.setHeaders()
+
+	textPartID := subscription.Snapshot.AssistantMessageID + "-text"
+	if !stream.writePart(map[string]string{
+		"type":      "start",
+		"messageId": subscription.Snapshot.AssistantMessageID,
+	}) || !stream.writePart(map[string]string{
+		"type": "text-start",
+		"id":   textPartID,
+	}) {
+		return
+	}
+	if subscription.Snapshot.Content != "" && !stream.writePart(map[string]string{
+		"type":  "text-delta",
+		"id":    textPartID,
+		"delta": subscription.Snapshot.Content,
+	}) {
+		return
+	}
+
+	if subscription.Snapshot.Status != conversation.MessageStatusStreaming {
+		stream.writeTerminal(textPartID, subscription.Snapshot.Status)
+		return
+	}
+	if subscription.Updates == nil {
+		stream.writeError(textPartID, streamUnavailableErrorText)
+		return
+	}
+
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case update, ok := <-subscription.Updates:
+			if !ok {
+				stream.writeError(textPartID, streamUnavailableErrorText)
+				return
+			}
+			switch update.Kind {
+			case chat.GenerationUpdateDelta:
+				if !stream.writePart(map[string]string{
+					"type":  "text-delta",
+					"id":    textPartID,
+					"delta": update.Text,
+				}) {
+					return
+				}
+			case chat.GenerationUpdateTerminal:
+				stream.writeTerminal(textPartID, update.Status)
+				return
+			default:
+				stream.writeError(textPartID, streamFailedErrorText)
+				return
+			}
+		}
+	}
+}
+
+type uiMessageStreamWriter struct {
+	response http.ResponseWriter
+}
+
+func (w uiMessageStreamWriter) setHeaders() {
+	w.response.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.response.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.response.Header().Set(uiMessageStreamVersionHeader, uiMessageStreamVersion)
+	w.response.Header().Set("X-Accel-Buffering", "no")
+}
+
+func (w uiMessageStreamWriter) writePart(part any) bool {
+	payload, err := json.Marshal(part)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(w.response, "data: %s\n\n", payload); err != nil {
+		return false
+	}
+	w.flush()
+	return true
+}
+
+func (w uiMessageStreamWriter) writeDone() bool {
+	if _, err := fmt.Fprint(w.response, "data: [DONE]\n\n"); err != nil {
+		return false
+	}
+	w.flush()
+	return true
+}
+
+func (w uiMessageStreamWriter) writeTerminal(textPartID string, status conversation.MessageStatus) {
+	if !w.writePart(map[string]string{"type": "text-end", "id": textPartID}) {
+		return
+	}
+	switch status {
+	case conversation.MessageStatusCompleted:
+		if !w.writePart(map[string]string{"type": "finish"}) {
+			return
+		}
+	case conversation.MessageStatusCancelled:
+		if !w.writePart(map[string]string{"type": "abort", "reason": "user cancelled"}) {
+			return
+		}
+	default:
+		if !w.writePart(map[string]string{"type": "error", "errorText": streamFailedErrorText}) {
+			return
+		}
+	}
+	w.writeDone()
+}
+
+func (w uiMessageStreamWriter) writeError(textPartID, message string) {
+	if !w.writePart(map[string]string{"type": "text-end", "id": textPartID}) {
+		return
+	}
+	if !w.writePart(map[string]string{"type": "error", "errorText": message}) {
+		return
+	}
+	w.writeDone()
+}
+
+func (w uiMessageStreamWriter) flush() {
+	if flusher, ok := w.response.(http.Flusher); ok {
+		flusher.Flush()
 	}
 }
 
