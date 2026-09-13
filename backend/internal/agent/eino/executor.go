@@ -77,9 +77,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		if chunk == nil {
 			continue
 		}
-		if len(chunk.ToolCalls) > 0 {
-			return errors.New("runtime stream emitted unsupported tool calls")
-		}
+
 		if chunk.Content == "" {
 			continue
 		}

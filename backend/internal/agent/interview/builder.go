@@ -41,6 +41,51 @@ type Builder struct {
 // 使 Executor 与 Graph 之间无需通过 map[string]any 传递业务数据。
 type GraphInput = chat.RuntimeInput
 
+// graphState is the request-scoped state that will carry the complete model
+// conversation through chat_model -> tools -> chat_model. The current graph
+// still uses the original message type; the nodes below are intentionally
+// kept as the next migration seam.
+type graphState struct {
+	Input      GraphInput
+	Messages   []*schema.Message
+	LastModel  *schema.Message
+	ToolRounds int
+}
+
+// routeModelOutput is the condition-edge hook. Its routing logic is
+// intentionally left for the Tool Calling implementation step.
+func routeModelOutput(ctx context.Context, message *schema.Message) (string, error) {
+	_ = ctx
+	if message == nil {
+		return "", errors.New("model output is nil")
+	}
+
+	if len(message.ToolCalls) == 0 {
+		return compose.END, nil
+	}
+
+	return "tools", nil
+}
+
+// newToolsNode creates the tool executor. Message accumulation and the loop
+// state are intentionally handled by the graph migration that follows.
+func newToolsNode(ctx context.Context) (*compose.ToolsNode, error) {
+	tools := []tool.BaseTool{}
+	searchTool, err := NewFakeSearchQuestionsTool()
+	if err != nil {
+		return nil, err
+	}
+	tools = append(tools, searchTool)
+	config := compose.ToolsNodeConfig{
+		Tools: tools,
+	}
+	node, err := compose.NewToolNode(ctx, &config)
+	if err != nil {
+		return nil, err
+	}
+	return node, nil
+}
+
 // newPrepareContextNode 将本轮可信输入整理为 Prompt Template 变量。
 // 它不读取数据库、不调用模型、不写入任何持久化数据。
 func newPrepareContextNode() *compose.Lambda {
@@ -84,6 +129,30 @@ func normalizeHistory(messages []*schema.Message) []*schema.Message {
 	return result
 }
 
+func bindTools(
+	ctx context.Context,
+	b *Builder,
+	tools []tool.BaseTool,
+) error {
+
+	toolInfos := make([]*schema.ToolInfo, 0, len(tools))
+
+	for _, currentTool := range tools {
+		info, err := currentTool.Info(ctx)
+		if err != nil {
+			return err
+		}
+		toolInfos = append(toolInfos, info)
+	}
+
+	model, err := b.chatModel.WithTools(toolInfos)
+	if err != nil {
+		return err
+	}
+	b.chatModel = model
+	return nil
+}
+
 func newPromptTemplateNode() *prompt.DefaultChatTemplate {
 	return prompt.FromMessages(
 		schema.FString,
@@ -124,16 +193,29 @@ func (b *Builder) Build(ctx context.Context, input chat.BuildInput) (chat.Runtim
 func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Runnable[GraphInput, *schema.Message], error) {
 	graph := compose.NewGraph[GraphInput, *schema.Message]()
 
+	if err := bindTools(ctx, b, b.tools); err != nil {
+		return nil, err
+	}
+
+	// 节点
 	if err := graph.AddLambdaNode("prepare_context", newPrepareContextNode()); err != nil {
 		return nil, err
 	}
 	if err := graph.AddChatTemplateNode("chat_template", newPromptTemplateNode()); err != nil {
 		return nil, err
 	}
+	toolNode, err := newToolsNode(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := graph.AddToolsNode("tools", toolNode); err != nil {
+		return nil, err
+	}
 	if err := graph.AddChatModelNode("chat_model", b.chatModel); err != nil {
 		return nil, err
 	}
 
+	// 边
 	if err := graph.AddEdge(compose.START, "prepare_context"); err != nil {
 		return nil, err
 	}
@@ -143,7 +225,19 @@ func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Ru
 	if err := graph.AddEdge("chat_template", "chat_model"); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge("chat_model", compose.END); err != nil {
+	if err := graph.AddEdge("chat_model", "tools"); err != nil {
+		return nil, err
+	}
+	branch := compose.NewGraphBranch(
+		func(ctx context.Context, output *schema.Message) (string, error) {
+			return routeModelOutput(ctx, output)
+		},
+		map[string]bool{
+			"tools":     true,
+			compose.END: true,
+		},
+	)
+	if err := graph.AddBranch("chat_model", branch); err != nil {
 		return nil, err
 	}
 
