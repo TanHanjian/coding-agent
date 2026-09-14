@@ -10,20 +10,38 @@ import (
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 
+	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
 
 // Executor 是用户 Eino Runtime 的应用层适配器。它不持有 SQLite 依赖，
 // 也不决定 Graph、提示词、工具或模型。
 type Executor struct {
-	builder chat.RuntimeBuilder
+	builder           chat.RuntimeBuilder
+	graphDebugLogging bool
 }
 
-func NewExecutor(builder chat.RuntimeBuilder) (*Executor, error) {
+type Option func(*Executor)
+
+// WithGraphDebugLogging enables per-run, metadata-only Graph lifecycle logs.
+// It must be controlled by local configuration and is disabled by default.
+func WithGraphDebugLogging(enabled bool) Option {
+	return func(executor *Executor) {
+		executor.graphDebugLogging = enabled
+	}
+}
+
+func NewExecutor(builder chat.RuntimeBuilder, options ...Option) (*Executor, error) {
 	if builder == nil {
 		return nil, errors.New("chat executor: runtime builder is required")
 	}
-	return &Executor{builder: builder}, nil
+	executor := &Executor{builder: builder}
+	for _, option := range options {
+		if option != nil {
+			option(executor)
+		}
+	}
+	return executor, nil
 }
 
 // Stream 的职责：
@@ -49,11 +67,15 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	if err != nil {
 		return err
 	}
+	runtimeOptions := make([]compose.Option, 0, 1)
+	if e.graphDebugLogging {
+		runtimeOptions = append(runtimeOptions, compose.WithCallbacks(newGraphDebugCallbacks(req)...))
+	}
 	reader, err := rt.Stream(ctx, chat.RuntimeInput{
 		History:          schemaHistory,
 		Query:            req.UserMessage.Content,
 		InterviewContext: "",
-	})
+	}, runtimeOptions...)
 	if err != nil {
 		return err
 	}
@@ -74,11 +96,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 			return fmt.Errorf("receive runtime stream: %w", err)
 		}
 
-		if chunk == nil {
-			continue
-		}
-
-		if chunk.Content == "" {
+		if chunk == nil || chunk.Role == schema.Tool || len(chunk.ToolCalls) > 0 || chunk.Content == "" {
 			continue
 		}
 

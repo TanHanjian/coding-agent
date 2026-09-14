@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -14,6 +15,7 @@ type Config struct {
 	Addr         string
 	DataDir      string
 	LogLevel     string
+	AgentDebug   bool
 	DatabasePath string
 	OpenAI       OpenAIConfig
 }
@@ -34,6 +36,10 @@ func Load() (Config, error) {
 	}
 	addr := envOr("APP_ADDR", "127.0.0.1:8080")
 	logLevel := envOr("APP_LOG_LEVEL", "info")
+	agentDebug, err := envBool("AGENT_DEBUG", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse AGENT_DEBUG: %w", err)
+	}
 	dataDir, err := dataDir()
 	if err != nil {
 		return Config{}, err
@@ -46,6 +52,7 @@ func Load() (Config, error) {
 		Addr:         addr,
 		DataDir:      dataDir,
 		LogLevel:     logLevel,
+		AgentDebug:   agentDebug,
 		DatabasePath: filepath.Join(dataDir, "data", "app.db"),
 		OpenAI: OpenAIConfig{
 			APIKey:  os.Getenv("OPENAI_API_KEY"),
@@ -72,6 +79,18 @@ func envOr(key, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envBool(key string, fallback bool) (bool, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
+	}
+	return parsed, nil
 }
 
 func dataDir() (string, error) {

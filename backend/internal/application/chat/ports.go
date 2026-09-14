@@ -30,7 +30,8 @@ type TurnStore interface {
 //
 // Stream 必须监听 ctx：当 ctx 结束时，它返回的 StreamReader 必须尽快以 ctx.Err()
 // 或 io.EOF 结束，不能让消费者永久阻塞在 Recv。每个非空 Content 都必须是可直接
-// 追加的助手文本增量；当前 Executor 不支持 ToolCalls。
+// 追加的助手文本增量。ToolCalls 与 ToolMessage 仅用于 Runtime 内部的工具循环；
+// Executor 不向 TextSink 转发这些中间消息。
 type Runtime interface {
 	Stream(context.Context, RuntimeInput, ...compose.Option) (*schema.StreamReader[*schema.Message], error)
 }

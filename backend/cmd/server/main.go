@@ -51,11 +51,6 @@ func main() {
 		slog.Error("run migrations", "error", err)
 		os.Exit(1)
 	}
-	chatExecutor, err := newChatExecutor(context.Background(), cfg)
-	if err != nil {
-		slog.Error("configure chat executor", "error", err)
-		os.Exit(1)
-	}
 	questionRepository := sqlite.NewQuestionRepository(db)
 	answerRepository := sqlite.NewAnswerRepository(db)
 	reviewRepository := sqlite.NewReviewRepository(db)
@@ -72,6 +67,13 @@ func main() {
 	answerService := answer.NewService(answer.Dependencies{Store: answerRepository, Questions: questionRepository})
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
+	chatExecutor, err := newChatExecutor(context.Background(), cfg, interview.ToolDependencies{
+		QuestionSearcher: questionService,
+	})
+	if err != nil {
+		slog.Error("configure chat executor", "error", err)
+		os.Exit(1)
+	}
 	chatService, err := chat.NewSkeletonService(chat.Dependencies{
 		Executor:    chatExecutor,
 		Registry:    chat.NewMemoryGenerationRegistry(),
@@ -104,7 +106,7 @@ func main() {
 
 // newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
 // 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
-func newChatExecutor(ctx context.Context, cfg config.Config) (chat.Executor, error) {
+func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies) (chat.Executor, error) {
 	if err := cfg.ValidateForChat(); err != nil {
 		return nil, fmt.Errorf("validate chat configuration: %w", err)
 	}
@@ -112,11 +114,15 @@ func newChatExecutor(ctx context.Context, cfg config.Config) (chat.Executor, err
 	if err != nil {
 		return nil, fmt.Errorf("create chat model: %w", err)
 	}
-	runtimeBuilder, err := interview.NewBuilder(chatModel)
+	tools, err := interview.NewTools(toolDeps)
+	if err != nil {
+		return nil, fmt.Errorf("create interview tools: %w", err)
+	}
+	runtimeBuilder, err := interview.NewBuilder(chatModel, tools...)
 	if err != nil {
 		return nil, fmt.Errorf("create interview runtime builder: %w", err)
 	}
-	chatExecutor, err := eino.NewExecutor(runtimeBuilder)
+	chatExecutor, err := eino.NewExecutor(runtimeBuilder, eino.WithGraphDebugLogging(cfg.AgentDebug))
 	if err != nil {
 		return nil, fmt.Errorf("create chat executor: %w", err)
 	}

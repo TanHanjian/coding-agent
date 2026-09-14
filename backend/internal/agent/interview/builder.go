@@ -4,6 +4,7 @@ package interview
 import (
 	"context"
 	"errors"
+	"io"
 	"strings"
 
 	chat "interview-memory-agent/backend/internal/application/chat"
@@ -19,6 +20,10 @@ const (
 	agentName         = "interview_review"
 	agentDescription  = "根据面试材料提供结构化复盘建议的助手。"
 	maxToolIterations = 6
+	// The initial path uses prepare_context, chat_template, and chat_model.
+	// Each possible tool round adds tools plus chat_model, and one extra tools
+	// execution is allowed so recordToolCall can reject the seventh invocation.
+	maxGraphRunSteps  = maxToolIterations*2 + 4
 	systemInstruction = `你是面试复盘助手。
 
 你的职责是基于已提供的面试题、候选人回答、历史复盘和用户问题，给出清晰、可执行的复盘建议。
@@ -41,49 +46,154 @@ type Builder struct {
 // 使 Executor 与 Graph 之间无需通过 map[string]any 传递业务数据。
 type GraphInput = chat.RuntimeInput
 
-// graphState is the request-scoped state that will carry the complete model
-// conversation through chat_model -> tools -> chat_model. The current graph
-// still uses the original message type; the nodes below are intentionally
-// kept as the next migration seam.
-type graphState struct {
-	Input      GraphInput
+// agentState 是单次 Graph 运行私有的运行时状态。它承载模型和工具循环
+// 之间的完整消息上下文，不进入 RuntimeInput，也不持久化到 SQLite。
+type agentState struct {
 	Messages   []*schema.Message
-	LastModel  *schema.Message
 	ToolRounds int
 }
 
-// routeModelOutput is the condition-edge hook. Its routing logic is
-// intentionally left for the Tool Calling implementation step.
-func routeModelOutput(ctx context.Context, message *schema.Message) (string, error) {
-	_ = ctx
-	if message == nil {
-		return "", errors.New("model output is nil")
+// newAgentState 必须为每次 Graph 运行返回一个全新的状态，避免并发请求
+// 共享消息切片。工具循环会在此追加 assistant tool call 和 tool message。
+func newAgentState() *agentState {
+	return &agentState{
+		Messages: make([]*schema.Message, 0),
 	}
-
-	if len(message.ToolCalls) == 0 {
-		return compose.END, nil
-	}
-
-	return "tools", nil
 }
 
-// newToolsNode creates the tool executor. Message accumulation and the loop
-// state are intentionally handled by the graph migration that follows.
-func newToolsNode(ctx context.Context) (*compose.ToolsNode, error) {
-	tools := []tool.BaseTool{}
-	searchTool, err := NewFakeSearchQuestionsTool()
-	if err != nil {
-		return nil, err
+// initializeMessageState records the prompt-rendered messages exactly once.
+// Later loop iterations enter chat_model from tools and must not reinitialize it.
+func initializeMessageState(
+	_ context.Context,
+	messages []*schema.Message,
+	state *agentState,
+) ([]*schema.Message, error) {
+	if len(messages) == 0 {
+		return nil, errors.New("chat template: rendered messages are required")
 	}
-	tools = append(tools, searchTool)
-	config := compose.ToolsNodeConfig{
-		Tools: tools,
+	if len(state.Messages) != 0 {
+		return nil, errors.New("chat template: agent state is already initialized")
 	}
-	node, err := compose.NewToolNode(ctx, &config)
-	if err != nil {
-		return nil, err
+
+	state.Messages = append(state.Messages, messages...)
+	return messages, nil
+}
+
+// modelStateInput supplies the complete accumulated conversation to each
+// model invocation without mutating it, preserving the model output stream.
+func modelStateInput(
+	_ context.Context,
+	_ []*schema.Message,
+	state *agentState,
+) ([]*schema.Message, error) {
+	if len(state.Messages) == 0 {
+		return nil, errors.New("chat model: agent state is not initialized")
 	}
-	return node, nil
+
+	return state.Messages, nil
+}
+
+// recordToolCall stores the assistant message that requested tool execution
+// and enforces the per-run tool invocation limit before tools run.
+func recordToolCall(
+	_ context.Context,
+	message *schema.Message,
+	state *agentState,
+) (*schema.Message, error) {
+	if message == nil || len(message.ToolCalls) == 0 {
+		return nil, errors.New("tools: model tool calls are required")
+	}
+	if state.ToolRounds >= maxToolIterations {
+		return nil, errors.New("tools: maximum tool iterations exceeded")
+	}
+
+	state.Messages = append(state.Messages, message)
+	state.ToolRounds++
+	return message, nil
+}
+
+// recordToolResults validates and stores the complete result batch before
+// control returns to chat_model, so the next model invocation can read the
+// full conversation.
+func recordToolResults(
+	_ context.Context,
+	messages []*schema.Message,
+	state *agentState,
+) ([]*schema.Message, error) {
+	if len(messages) == 0 {
+		return nil, errors.New("tools: tool results are required")
+	}
+	if len(state.Messages) == 0 {
+		return nil, errors.New("tools: tool call is required before results")
+	}
+
+	toolCallMessage := state.Messages[len(state.Messages)-1]
+	if toolCallMessage == nil || len(toolCallMessage.ToolCalls) == 0 {
+		return nil, errors.New("tools: pending tool calls are required before results")
+	}
+
+	pending := make(map[string]struct{}, len(toolCallMessage.ToolCalls))
+	for _, toolCall := range toolCallMessage.ToolCalls {
+		if toolCall.ID == "" {
+			return nil, errors.New("tools: tool call id is required")
+		}
+		if _, exists := pending[toolCall.ID]; exists {
+			return nil, errors.New("tools: duplicate pending tool call id")
+		}
+		pending[toolCall.ID] = struct{}{}
+	}
+	if len(messages) != len(pending) {
+		return nil, errors.New("tools: result count does not match pending tool calls")
+	}
+
+	for _, message := range messages {
+		if message == nil || message.Role != schema.Tool || message.ToolCallID == "" {
+			return nil, errors.New("tools: each result must be a tool message with a tool call id")
+		}
+		if _, exists := pending[message.ToolCallID]; !exists {
+			return nil, errors.New("tools: result does not match a pending tool call")
+		}
+		delete(pending, message.ToolCallID)
+	}
+	if len(pending) != 0 {
+		return nil, errors.New("tools: missing result for pending tool call")
+	}
+
+	state.Messages = append(state.Messages, messages...)
+	return messages, nil
+}
+
+// routeModelOutput scans the model stream for tool calls. It must not route
+// on early text alone: some providers emit text before a later tool-call delta.
+func routeModelOutput(
+	ctx context.Context,
+	stream *schema.StreamReader[*schema.Message],
+) (string, error) {
+	defer stream.Close()
+
+	for {
+		message, err := stream.Recv()
+		if errors.Is(err, io.EOF) {
+			return compose.END, nil
+		}
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return "", ctxErr
+			}
+			return "", err
+		}
+		if message == nil {
+			continue
+		}
+		if len(message.ToolCalls) > 0 {
+			return "tools", nil
+		}
+	}
+}
+
+// newToolsNode creates the executor for the same tool set bound to the model.
+func newToolsNode(ctx context.Context, tools []tool.BaseTool) (*compose.ToolsNode, error) {
+	return compose.NewToolNode(ctx, &compose.ToolsNodeConfig{Tools: tools})
 }
 
 // newPrepareContextNode 将本轮可信输入整理为 Prompt Template 变量。
@@ -131,26 +241,28 @@ func normalizeHistory(messages []*schema.Message) []*schema.Message {
 
 func bindTools(
 	ctx context.Context,
-	b *Builder,
+	chatModel model.ToolCallingChatModel,
 	tools []tool.BaseTool,
-) error {
+) (model.ToolCallingChatModel, error) {
+	if len(tools) == 0 {
+		return chatModel, nil
+	}
 
 	toolInfos := make([]*schema.ToolInfo, 0, len(tools))
 
 	for _, currentTool := range tools {
 		info, err := currentTool.Info(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		toolInfos = append(toolInfos, info)
 	}
 
-	model, err := b.chatModel.WithTools(toolInfos)
+	boundModel, err := chatModel.WithTools(toolInfos)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	b.chatModel = model
-	return nil
+	return boundModel, nil
 }
 
 func newPromptTemplateNode() *prompt.DefaultChatTemplate {
@@ -178,40 +290,62 @@ func (b *Builder) Build(ctx context.Context, input chat.BuildInput) (chat.Runtim
 	return b.buildGraph(ctx, input)
 }
 
-// buildGraph 是面试复盘 Graph 的核心实现入口。
+// buildGraph 组装面试复盘 Graph：
 //
-// 实现步骤：
-//  1. 创建 compose.NewGraph[GraphInput, *schema.Message]()。
-//  2. 添加 prepare_context Lambda 节点，将结构化可信输入转换为模板变量。
-//  3. 添加 chat_template 节点，统一插入系统提示词、材料、历史和当前问题。
-//  4. 添加 chat_model 节点，使用 b.chatModel。
-//  5. 首版添加 START → prepare_context → chat_template → chat_model → END 边并编译 Graph。
-//  6. 接入工具时，再添加工具调用条件分支、tools 节点和回到 chat_model 的边；
-//     循环上限使用 maxToolIterations，工具集合使用 b.tools。
+// START → prepare_context → chat_template → chat_model
 //
-// 此方法不读写 SQLite、不生成 HTTP 数据流，也不持久化 Graph 事件。
+//	├─ 无 ToolCalls → END
+//	└─ 有 ToolCalls → tools → chat_model
+//
+// agentState 只保存下一次模型调用所需的累积上下文和工具轮数；最终回答由
+// Runtime 的输出流交给 Executor 持久化。此方法不读写 SQLite 或持久化 Graph 事件。
 func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Runnable[GraphInput, *schema.Message], error) {
-	graph := compose.NewGraph[GraphInput, *schema.Message]()
+	graph := compose.NewGraph[GraphInput, *schema.Message](
+		compose.WithGenLocalState(func(context.Context) *agentState {
+			return newAgentState()
+		}),
+	)
 
-	if err := bindTools(ctx, b, b.tools); err != nil {
+	chatModel, err := bindTools(ctx, b.chatModel, b.tools)
+	if err != nil {
 		return nil, err
 	}
 
 	// 节点
-	if err := graph.AddLambdaNode("prepare_context", newPrepareContextNode()); err != nil {
+	if err := graph.AddLambdaNode(
+		"prepare_context",
+		newPrepareContextNode(),
+		compose.WithNodeName("prepare_context"),
+	); err != nil {
 		return nil, err
 	}
-	if err := graph.AddChatTemplateNode("chat_template", newPromptTemplateNode()); err != nil {
+	if err := graph.AddChatTemplateNode(
+		"chat_template",
+		newPromptTemplateNode(),
+		compose.WithNodeName("chat_template"),
+		compose.WithStatePostHandler(initializeMessageState),
+	); err != nil {
 		return nil, err
 	}
-	toolNode, err := newToolsNode(ctx)
+	toolNode, err := newToolsNode(ctx, b.tools)
 	if err != nil {
 		return nil, err
 	}
-	if err := graph.AddToolsNode("tools", toolNode); err != nil {
+	if err := graph.AddToolsNode(
+		"tools",
+		toolNode,
+		compose.WithNodeName("tools"),
+		compose.WithStatePreHandler(recordToolCall),
+		compose.WithStatePostHandler(recordToolResults),
+	); err != nil {
 		return nil, err
 	}
-	if err := graph.AddChatModelNode("chat_model", b.chatModel); err != nil {
+	if err := graph.AddChatModelNode(
+		"chat_model",
+		chatModel,
+		compose.WithNodeName("chat_model"),
+		compose.WithStatePreHandler(modelStateInput),
+	); err != nil {
 		return nil, err
 	}
 
@@ -225,13 +359,8 @@ func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Ru
 	if err := graph.AddEdge("chat_template", "chat_model"); err != nil {
 		return nil, err
 	}
-	if err := graph.AddEdge("chat_model", "tools"); err != nil {
-		return nil, err
-	}
-	branch := compose.NewGraphBranch(
-		func(ctx context.Context, output *schema.Message) (string, error) {
-			return routeModelOutput(ctx, output)
-		},
+	branch := compose.NewStreamGraphBranch(
+		routeModelOutput,
 		map[string]bool{
 			"tools":     true,
 			compose.END: true,
@@ -240,8 +369,15 @@ func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Ru
 	if err := graph.AddBranch("chat_model", branch); err != nil {
 		return nil, err
 	}
+	if err := graph.AddEdge("tools", "chat_model"); err != nil {
+		return nil, err
+	}
 
-	ret, err := graph.Compile(ctx)
+	ret, err := graph.Compile(
+		ctx,
+		compose.WithGraphName(agentName),
+		compose.WithMaxRunSteps(maxGraphRunSteps),
+	)
 	if err != nil {
 		return nil, err
 	}

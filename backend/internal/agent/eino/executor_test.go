@@ -127,15 +127,23 @@ func TestExecutorStreamReturnsRuntimeAndSinkErrors(t *testing.T) {
 	}
 }
 
-func TestExecutorStreamRejectsUnsupportedInput(t *testing.T) {
+func TestExecutorStreamHidesToolMessagesAndForwardsFinalText(t *testing.T) {
 	executor, err := NewExecutor(&builderStub{runtime: &runtimeStub{
-		reader: schema.StreamReaderFromArray([]*schema.Message{{ToolCalls: []schema.ToolCall{{}}}}),
+		reader: schema.StreamReaderFromArray([]*schema.Message{
+			{ToolCalls: []schema.ToolCall{{}}},
+			schema.ToolMessage("internal tool result", "call-1"),
+			schema.AssistantMessage("final answer", nil),
+		}),
 	}})
 	if err != nil {
 		t.Fatalf("NewExecutor() error = %v", err)
 	}
-	if err := executor.Stream(context.Background(), testRequest(nil), &sinkStub{}); err == nil {
-		t.Fatal("Stream() error = nil, want tool call rejection")
+	sink := &sinkStub{}
+	if err := executor.Stream(context.Background(), testRequest(nil), sink); err != nil {
+		t.Fatalf("Stream() error = %v", err)
+	}
+	if got, want := sink.chunks, []string{"final answer"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("sink chunks = %#v, want %#v", got, want)
 	}
 	if err := executor.Stream(context.Background(), testRequest(nil), nil); err == nil {
 		t.Fatal("Stream() error = nil, want nil sink validation error")
@@ -143,6 +151,33 @@ func TestExecutorStreamRejectsUnsupportedInput(t *testing.T) {
 
 	if _, err := toSchemaHistory([]conversation.Message{{Role: "tool", Content: "x"}}); err == nil {
 		t.Fatal("toSchemaHistory() error = nil, want unsupported role error")
+	}
+}
+
+func TestExecutorPassesGraphDebugCallbacksOnlyWhenEnabled(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		debug       bool
+		wantOptions int
+	}{
+		{name: "disabled", debug: false, wantOptions: 0},
+		{name: "enabled", debug: true, wantOptions: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runtime := &runtimeStub{
+				reader: schema.StreamReaderFromArray([]*schema.Message{schema.AssistantMessage("done", nil)}),
+			}
+			executor, err := NewExecutor(&builderStub{runtime: runtime}, WithGraphDebugLogging(tc.debug))
+			if err != nil {
+				t.Fatalf("NewExecutor() error = %v", err)
+			}
+			if err := executor.Stream(context.Background(), testRequest(nil), &sinkStub{}); err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			if runtime.optionCount != tc.wantOptions {
+				t.Fatalf("runtime option count = %d, want %d", runtime.optionCount, tc.wantOptions)
+			}
+		})
 	}
 }
 
@@ -158,14 +193,16 @@ func (b *builderStub) Build(_ context.Context, input chat.BuildInput) (chat.Runt
 }
 
 type runtimeStub struct {
-	reader *schema.StreamReader[*schema.Message]
-	err    error
-	input  chat.RuntimeInput
-	stream func(context.Context, chat.RuntimeInput, ...compose.Option) (*schema.StreamReader[*schema.Message], error)
+	reader      *schema.StreamReader[*schema.Message]
+	err         error
+	input       chat.RuntimeInput
+	optionCount int
+	stream      func(context.Context, chat.RuntimeInput, ...compose.Option) (*schema.StreamReader[*schema.Message], error)
 }
 
 func (r *runtimeStub) Stream(ctx context.Context, input chat.RuntimeInput, options ...compose.Option) (*schema.StreamReader[*schema.Message], error) {
 	r.input = input
+	r.optionCount = len(options)
 	if r.stream != nil {
 		return r.stream(ctx, input, options...)
 	}
