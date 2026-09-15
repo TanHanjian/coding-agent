@@ -163,19 +163,23 @@ func recordToolResults(
 	return messages, nil
 }
 
-// routeModelOutput decides as soon as the model commits to a turn type. The
-// branch reads a private stream copy, so returning END on the first text chunk
-// lets the original chat_model stream reach Executor immediately. A ToolCall
-// after visible text is a protocol violation and is rejected by Executor.
+// routeModelOutput reads the complete private stream copy before deciding the
+// next node. The original chat_model stream remains available to Executor, so
+// visible text keeps reaching the browser while this branch waits to learn
+// whether a later chunk contains a ToolCall.
 func routeModelOutput(
 	ctx context.Context,
 	stream *schema.StreamReader[*schema.Message],
 ) (string, error) {
 	defer stream.Close()
 
+	hasToolCalls := false
 	for {
 		message, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			if hasToolCalls {
+				return "tools", nil
+			}
 			return compose.END, nil
 		}
 		if err != nil {
@@ -188,10 +192,7 @@ func routeModelOutput(
 			continue
 		}
 		if len(message.ToolCalls) > 0 {
-			return "tools", nil
-		}
-		if message.Content != "" {
-			return compose.END, nil
+			hasToolCalls = true
 		}
 	}
 }

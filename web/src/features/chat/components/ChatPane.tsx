@@ -21,7 +21,12 @@ type ToolPart = {
   input?: unknown
   output?: unknown
   errorText?: string
-  data?: { phase?: string }
+  state?: string
+}
+
+type AgentStatusPart = {
+  type: string
+  data?: { phase?: string; stepId?: string }
 }
 
 function messageText(message: { parts: Array<{ type: string; text?: string }> }) {
@@ -106,26 +111,38 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
             if (!content && message.role !== 'assistant') return null
             const isLatestAssistant = message.role === 'assistant' && message.id === messages.at(-1)?.id
             const isWaitingForText = isLatestAssistant && isGenerating
-            const toolParts = message.parts.filter((part) => part.type === 'dynamic-tool') as ToolPart[]
-            const statusParts = message.parts.filter((part) => part.type === 'data-agent-status') as ToolPart[]
-            const phase = statusParts.at(-1)?.data?.phase
             return (
               <article className={`chat-message ${message.role}`} key={message.id}>
                 {message.role === 'assistant' ? (
                   <div className="assistant-content">
-                    {toolParts.map((part, index) => (
-                      <ToolActivity
-                        key={`${message.id}-tool-${index}`}
-                        toolName={part.toolName}
-                        input={part.input}
-                        output={part.output}
-                        errorText={part.errorText}
-                      />
-                    ))}
-                    {phase && <p className="agent-status">{phase === 'calling-tool' ? '正在调用工具…' : '正在思考…'}</p>}
-                    {content ? <MarkdownContent content={content} /> : isWaitingForText ? (
+                    {message.parts.map((part, index) => {
+                      if (part.type === 'text') {
+                        return part.text ? <MarkdownContent key={`${message.id}-text-${index}`} content={part.text} /> : null
+                      }
+                      if (part.type === 'dynamic-tool') {
+                        const tool = part as ToolPart
+                        return <ToolActivity
+                          key={`${message.id}-tool-${index}`}
+                          toolName={tool.toolName}
+                          input={tool.input}
+                          output={tool.output}
+                          errorText={tool.errorText}
+                          state={tool.state}
+                        />
+                      }
+                      if (part.type === 'data-agent-status') {
+                        const statusPart = part as AgentStatusPart
+                        const phase = statusPart.data?.phase
+                        if (!phase || phase === 'step-start' || phase === 'step-finish' || phase === 'answering') return null
+                        return <p className="agent-status" key={`${message.id}-status-${index}`}>
+                          {phase === 'calling-tool' ? '正在调用工具…' : '正在思考…'}
+                        </p>
+                      }
+                      return null
+                    })}
+                    {!content && isWaitingForText ? (
                       <span className="typing-cursor" aria-label="正在思考" />
-                    ) : toolParts.length === 0 ? (
+                    ) : !content && !isWaitingForText ? (
                       <p className="assistant-failure">生成失败，请重新生成。</p>
                     ) : null}
                   </div>

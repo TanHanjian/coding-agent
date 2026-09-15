@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 )
 
 type writerStoreStub struct {
@@ -33,6 +34,10 @@ func (h *writerHubSpy) PublishText(messageID, text string) {
 	*h.events = append(*h.events, "hub")
 	h.messageID = messageID
 	h.text = text
+}
+
+func (h *writerHubSpy) PublishEvent(_ string, _ GenerationEvent) {
+	*h.events = append(*h.events, "event")
 }
 
 func TestGenerationTextWriterCommitsBeforePublishing(t *testing.T) {
@@ -83,5 +88,24 @@ func TestGenerationTextWriterIgnoresEmptyBatch(t *testing.T) {
 	}
 	if len(events) != 0 {
 		t.Fatalf("empty batch must not have side effects: %v", events)
+	}
+}
+
+func TestBufferedTextSinkFlushesTextBeforePublishingStepEvent(t *testing.T) {
+	events := make([]string, 0, 3)
+	store := &writerStoreStub{events: &events}
+	hub := &writerHubSpy{events: &events}
+	writer := newGenerationTextWriter(store, hub, "m-assistant")
+	sink := newBufferedTextSink(writer, "m-assistant", TextBufferPolicy{MaxBytes: 1024, MaxWait: time.Hour})
+
+	if err := sink.WriteChunk(context.Background(), "我先查一下。"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WriteEvent(context.Background(), GenerationEvent{Kind: GenerationEventToolInput}); err != nil {
+		t.Fatal(err)
+	}
+
+	if want := []string{"store", "hub", "event"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("unexpected side-effect order: got=%v want=%v", events, want)
 	}
 }

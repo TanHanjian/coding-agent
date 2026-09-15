@@ -67,7 +67,8 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	if err != nil {
 		return err
 	}
-	runtimeOptions := []compose.Option{compose.WithCallbacks(newGraphEventCallbacks(req, sink)...)}
+	steps := newGenerationStepTracker()
+	runtimeOptions := []compose.Option{compose.WithCallbacks(newGraphEventCallbacks(req, sink, steps)...)}
 	if e.graphDebugLogging {
 		runtimeOptions = append(runtimeOptions, compose.WithCallbacks(newGraphDebugCallbacks(req)...))
 	}
@@ -88,6 +89,9 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 
 		chunk, err := reader.Recv()
 		if errors.Is(err, io.EOF) {
+			if stepID := steps.Finish(); stepID != "" {
+				_ = sink.WriteEvent(ctx, chat.GenerationEvent{Kind: chat.GenerationEventStepFinish, StepID: stepID})
+			}
 			return nil
 		}
 		if err != nil {
@@ -101,17 +105,22 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 			continue
 		}
 		if len(chunk.ToolCalls) > 0 {
-			if answerStarted {
-				return errors.New("agent output protocol violation: tool call after final text")
-			}
 			continue
 		}
 		if chunk.Content == "" {
 			continue
 		}
+		// Graph branches may retain an earlier model stream while waiting to
+		// decide whether a later chunk contains a ToolCall. In a real Eino run,
+		// the ChatModel callback already forwards every model delta immediately.
+		// Keep this path for lightweight Runtime stubs that do not execute
+		// callbacks, but never duplicate final text in a real run.
+		if steps.HasStarted() {
+			continue
+		}
 
 		if !answerStarted {
-			if err := sink.WriteEvent(ctx, chat.GenerationEvent{Kind: chat.GenerationEventPhase, Phase: "answering"}); err != nil {
+			if err := sink.WriteEvent(ctx, chat.GenerationEvent{Kind: chat.GenerationEventPhase, StepID: steps.Current(), Phase: "answering"}); err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return ctxErr
 				}

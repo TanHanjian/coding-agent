@@ -92,24 +92,16 @@ const (
 // streamSubscription 将 Chat 应用层的 snapshot + delta 订阅编码为 AI SDK UI
 // Message Stream v1。它只结束浏览器订阅；r.Context() 取消不会传递给后台生成。
 func streamSubscription(w http.ResponseWriter, r *http.Request, subscription chat.GenerationSubscription) {
-	stream := uiMessageStreamWriter{response: w}
+	stream := newUIMessageStreamSession(w, subscription.Snapshot.AssistantMessageID)
 	stream.setHeaders()
 
-	textPartID := subscription.Snapshot.AssistantMessageID + "-text"
 	if !stream.writePart(map[string]string{
 		"type":      "start",
 		"messageId": subscription.Snapshot.AssistantMessageID,
-	}) || !stream.writePart(map[string]string{
-		"type": "text-start",
-		"id":   textPartID,
 	}) {
 		return
 	}
-	if subscription.Snapshot.Content != "" && !stream.writePart(map[string]string{
-		"type":  "text-delta",
-		"id":    textPartID,
-		"delta": subscription.Snapshot.Content,
-	}) {
+	if subscription.Snapshot.Content != "" && !stream.writeText(subscription.Snapshot.Content) {
 		return
 	}
 	for _, event := range subscription.Snapshot.EventSummaries {
@@ -119,11 +111,11 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 	}
 
 	if subscription.Snapshot.Status != conversation.MessageStatusStreaming {
-		stream.writeTerminal(textPartID, subscription.Snapshot.Status)
+		stream.writeTerminal(subscription.Snapshot.Status)
 		return
 	}
 	if subscription.Updates == nil {
-		stream.writeError(textPartID, streamUnavailableErrorText)
+		stream.writeError(streamUnavailableErrorText)
 		return
 	}
 
@@ -133,16 +125,12 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 			return
 		case update, ok := <-subscription.Updates:
 			if !ok {
-				stream.writeError(textPartID, streamUnavailableErrorText)
+				stream.writeError(streamUnavailableErrorText)
 				return
 			}
 			switch update.Kind {
 			case chat.GenerationUpdateDelta:
-				if !stream.writePart(map[string]string{
-					"type":  "text-delta",
-					"id":    textPartID,
-					"delta": update.Text,
-				}) {
+				if !stream.writeText(update.Text) {
 					return
 				}
 			case chat.GenerationUpdateEvent:
@@ -150,41 +138,106 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 					return
 				}
 			case chat.GenerationUpdateTerminal:
-				stream.writeTerminal(textPartID, update.Status)
+				stream.writeTerminal(update.Status)
 				return
 			default:
-				stream.writeError(textPartID, streamFailedErrorText)
+				stream.writeError(streamFailedErrorText)
 				return
 			}
 		}
 	}
 }
 
-func (w uiMessageStreamWriter) writeGenerationEvent(event chat.GenerationEvent) bool {
+type uiMessageStreamSession struct {
+	uiMessageStreamWriter
+	assistantMessageID string
+	activeTextPartID   string
+	textPartCount      int
+}
+
+func newUIMessageStreamSession(w http.ResponseWriter, assistantMessageID string) *uiMessageStreamSession {
+	return &uiMessageStreamSession{
+		uiMessageStreamWriter: uiMessageStreamWriter{response: w},
+		assistantMessageID:    assistantMessageID,
+	}
+}
+
+func (s *uiMessageStreamSession) writeText(delta string) bool {
+	if delta == "" {
+		return true
+	}
+	if s.activeTextPartID == "" {
+		s.textPartCount++
+		s.activeTextPartID = fmt.Sprintf("%s-text-%d", s.assistantMessageID, s.textPartCount)
+		if !s.writePart(map[string]string{"type": "text-start", "id": s.activeTextPartID}) {
+			return false
+		}
+	}
+	return s.writePart(map[string]string{"type": "text-delta", "id": s.activeTextPartID, "delta": delta})
+}
+
+func (s *uiMessageStreamSession) closeText() bool {
+	if s.activeTextPartID == "" {
+		return true
+	}
+	if !s.writePart(map[string]string{"type": "text-end", "id": s.activeTextPartID}) {
+		return false
+	}
+	s.activeTextPartID = ""
+	return true
+}
+
+func (s *uiMessageStreamSession) writeGenerationEvent(event chat.GenerationEvent) bool {
 	switch event.Kind {
+	case chat.GenerationEventStepStart:
+		return s.closeText() &&
+			s.writePart(map[string]any{"type": "start-step"}) &&
+			s.writeStatus(event, "step-start")
+	case chat.GenerationEventStepFinish:
+		return s.closeText() &&
+			s.writeStatus(event, "step-finish") &&
+			s.writePart(map[string]any{"type": "finish-step"})
 	case chat.GenerationEventPhase:
-		return w.writePart(map[string]any{"type": "data-agent-status", "data": map[string]any{"phase": event.Phase}})
+		return s.writeStatus(event, event.Phase)
 	case chat.GenerationEventToolInput:
-		return w.writePart(map[string]any{"type": "tool-input-start", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "dynamic": true}) &&
-			w.writePart(map[string]any{"type": "tool-input-available", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "input": event.Input, "dynamic": true})
+		return s.closeText() &&
+			s.writePart(map[string]any{"type": "tool-input-start", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)}) &&
+			s.writePart(map[string]any{"type": "tool-input-available", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "input": event.Input, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
 	case chat.GenerationEventToolOutput:
-		return w.writePart(map[string]any{"type": "tool-output-available", "toolCallId": event.ToolCallID, "output": event.Output, "dynamic": true})
+		return s.writePart(map[string]any{"type": "tool-output-available", "toolCallId": event.ToolCallID, "output": event.Output, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
 	case chat.GenerationEventToolOutputError:
-		return w.writePart(map[string]any{"type": "tool-output-error", "toolCallId": event.ToolCallID, "errorText": event.ErrorText, "dynamic": true})
+		return s.writePart(map[string]any{"type": "tool-output-error", "toolCallId": event.ToolCallID, "errorText": event.ErrorText, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
 	default:
 		return false
 	}
 }
 
-func (w uiMessageStreamWriter) writeEventSummary(event chat.GenerationEvent) bool {
-	data := map[string]any{"phase": string(event.Kind), "toolCallId": event.ToolCallID, "toolName": event.ToolName}
-	if event.Phase != "" {
-		data["phase"] = event.Phase
+func (s *uiMessageStreamSession) writeEventSummary(event chat.GenerationEvent) bool {
+	return s.writeStatus(event, string(event.Kind))
+}
+
+func (s *uiMessageStreamSession) writeStatus(event chat.GenerationEvent, phase string) bool {
+	data := map[string]any{"phase": phase}
+	if event.StepID != "" {
+		data["stepId"] = event.StepID
+	}
+	if event.ToolCallID != "" {
+		data["toolCallId"] = event.ToolCallID
+	}
+	if event.ToolName != "" {
+		data["toolName"] = event.ToolName
 	}
 	if event.ErrorText != "" {
 		data["errorText"] = event.ErrorText
 	}
-	return w.writePart(map[string]any{"type": "data-agent-status", "data": data})
+	return s.writePart(map[string]any{"type": "data-agent-status", "data": data})
+}
+
+func stepMetadata(stepID string) map[string]string {
+	if stepID == "" {
+		return nil
+	}
+	return map[string]string{"stepId": stepID}
 }
 
 type uiMessageStreamWriter struct {
@@ -218,35 +271,35 @@ func (w uiMessageStreamWriter) writeDone() bool {
 	return true
 }
 
-func (w uiMessageStreamWriter) writeTerminal(textPartID string, status conversation.MessageStatus) {
-	if !w.writePart(map[string]string{"type": "text-end", "id": textPartID}) {
+func (s *uiMessageStreamSession) writeTerminal(status conversation.MessageStatus) {
+	if !s.closeText() {
 		return
 	}
 	switch status {
 	case conversation.MessageStatusCompleted:
-		if !w.writePart(map[string]string{"type": "finish"}) {
+		if !s.writePart(map[string]string{"type": "finish"}) {
 			return
 		}
 	case conversation.MessageStatusCancelled:
-		if !w.writePart(map[string]string{"type": "abort", "reason": "user cancelled"}) {
+		if !s.writePart(map[string]string{"type": "abort", "reason": "user cancelled"}) {
 			return
 		}
 	default:
-		if !w.writePart(map[string]string{"type": "error", "errorText": streamFailedErrorText}) {
+		if !s.writePart(map[string]string{"type": "error", "errorText": streamFailedErrorText}) {
 			return
 		}
 	}
-	w.writeDone()
+	s.writeDone()
 }
 
-func (w uiMessageStreamWriter) writeError(textPartID, message string) {
-	if !w.writePart(map[string]string{"type": "text-end", "id": textPartID}) {
+func (s *uiMessageStreamSession) writeError(message string) {
+	if !s.closeText() {
 		return
 	}
-	if !w.writePart(map[string]string{"type": "error", "errorText": message}) {
+	if !s.writePart(map[string]string{"type": "error", "errorText": message}) {
 		return
 	}
-	w.writeDone()
+	s.writeDone()
 }
 
 func (w uiMessageStreamWriter) flush() {

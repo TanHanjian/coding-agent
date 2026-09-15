@@ -20,12 +20,12 @@
 
 ## 第 1 步核对结果
 
-- 当前 `chat.Runtime` 只返回 Eino `StreamReader[*schema.Message]`，`Executor` 会拒绝带 `ToolCalls` 的消息。
-- `interview.Builder` 已接收 `model.ToolCallingChatModel` 和 `tool.BaseTool`，但当前 Graph 仍是单次 ChatModel 节点。
+- 当前 `chat.Runtime` 返回 Eino `StreamReader[*schema.Message]`；Executor 已转发文本，但其“文本后 ToolCall”防御逻辑不支持多 Step 流。
+- `interview.Builder` 已接收 `model.ToolCallingChatModel` 和 `tool.BaseTool`，并已组装工具循环；其流分支目前在首个文本 chunk 后结束，不能处理同 Step 的延迟 ToolCall。
 - Eino v0.9.19 提供 `flow/agent/react`、`model.WithTools`、`compose.ToolsNode` 和 `schema.ToolMessage`，可用于实现受限工具循环。
 - `question.Service.Search` 可用于题目搜索，`question.Service.Get` 返回题目、作答、复盘和附件上下文。
 - `answer.Service.List`、`review.Service.List` 可用于独立历史读取。
-- 当前 HTTP 流式协议只发送文本增量；结构化 Agent 事件需要在后续步骤扩展。
+- 当前 HTTP 流式协议已支持文本和工具结构化 part，但缺少 `stepId`、原始 part 顺序渲染与“文本后 ToolCall”回归保证。
 
 第 1 步完成。
 
@@ -41,7 +41,7 @@
 - 执行工具并生成 ToolMessage。
 - 将 ToolMessage 送回模型继续生成。
 - 设置最大工具循环次数为 6。
-- 工具调用期间只转发普通助手文本。
+- 文本、工具调用和工具结果都必须按 Step 实时转发；不得将工具数据拼入普通助手文本。
 
 完成标准：模型无工具调用时行为不变；单次工具调用能继续生成；达到上限后安全失败；工具参数不出现在前端文本和日志中。
 
@@ -114,20 +114,23 @@
 
 完成标准：只有明确确认才写入数据库；拒绝和含糊回复不写入；保存失败不返回成功；不出现部分保存后仍报告成功的情况。
 
-## 第 7 步：增加流式结构化事件
+## 第 7 步：增加实时 Step 流式结构化事件
 
 目标：前端能够知道候选状态和保存结果，同时保留原有文本流兼容性。
 
 工作内容：
 
-- 保留现有文本增量事件。
+- 定义稳定 `stepId`，并保留现有文本增量事件。
+- 为每次模型调用发送 `step-start` / `step-finish`，将文本和工具 part 关联至对应 Step。
 - 增加 `memory_candidate_pending`、`memory_saved` 和 `memory_save_failed`。
 - 定义事件字段和 JSON 编码方式。
-- 工具调用过程不发送给前端。
-- 普通文本客户端继续正常显示回答。
+- 实时发送工具输入开始、由工具定义的可展示输入/输出摘要或脱敏错误；不将它们拼入 Markdown，且绝不发送原始 payload。
+- 前端按 UI Message parts 原始顺序展示文本和工具活动，不能统一把工具活动放在正文前。
+- 断线重连只发送文本和脱敏 Step 摘要，不能重建完整工具 payload。
+- 普通文本客户端继续正常显示回答，并在 Run 终态前把文本视为进行中内容。
 - 事件中不返回敏感信息或完整内部错误。
 
-完成标准：候选出现、确认保存和保存失败时前端都能收到对应事件，且原有聊天客户端不崩溃。
+完成标准：候选、文本、工具活动和终态都按契约到达；同 Step 文本后 ToolCall 不丢失文本也不跳过工具；原有聊天客户端不崩溃。
 
 ## 第 8 步：接入完整 Agent 并验收
 
@@ -139,10 +142,10 @@
 - 更新系统提示词：优先使用题库材料，区分事实、推断和建议，不编造内容，保存前必须请求确认。
 - 将候选状态接入聊天请求处理。
 - 将 Agent 事件接入现有 HTTP 流式接口。
-- 删除或替换旧的“ToolCalls 不支持”逻辑。
+- 删除或替换旧的“文本后 ToolCall 即失败 / 首个文本即结束”的逻辑。
 - 更新 Step 4 tasks 和验收记录。
 
-完整验收场景：检索题目并回答；检索题目、作答和复盘并诊断；提出候选并确认保存；拒绝或含糊回复不保存；工具失败、循环过多和取消均安全结束；日志和输出不包含敏感信息。
+完整验收场景：检索题目并回答；同 Step 先文本、再 ToolCall、再输出回答；检索题目、作答和复盘并诊断；提出候选并确认保存；拒绝或含糊回复不保存；工具失败、循环过多、断线重连和取消均安全结束；日志和输出不包含敏感信息。
 
 ## 最终验证
 

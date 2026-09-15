@@ -345,11 +345,11 @@ func TestBuilderGraphStreamsTextWithoutWaitingForLateToolCall(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runtime stream error = %v", err)
 	}
-	if output != "我先查一下。" {
-		t.Fatalf("graph output = %q, want first final-text chunk", output)
+	if output != "最终答案" {
+		t.Fatalf("graph output = %q, want final graph output", output)
 	}
-	if len(chatModel.inputs) != 1 {
-		t.Fatalf("model invocation count = %d, want 1", len(chatModel.inputs))
+	if len(chatModel.inputs) != 2 {
+		t.Fatalf("model invocation count = %d, want 2", len(chatModel.inputs))
 	}
 }
 

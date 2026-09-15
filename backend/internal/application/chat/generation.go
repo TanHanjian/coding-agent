@@ -63,7 +63,7 @@ func (h *MemoryGenerationHub) PublishEvent(assistantMessageID string, event Gene
 	if run == nil || run.status != conversation.MessageStatusStreaming {
 		return
 	}
-	run.eventSummaries = append(run.eventSummaries, GenerationEvent{Kind: event.Kind, Phase: event.Phase, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ErrorText: event.ErrorText})
+	run.eventSummaries = append(run.eventSummaries, GenerationEvent{Kind: event.Kind, StepID: event.StepID, Phase: event.Phase, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ErrorText: event.ErrorText})
 	h.broadcast(run, GenerationUpdate{Kind: GenerationUpdateEvent, Event: event})
 }
 

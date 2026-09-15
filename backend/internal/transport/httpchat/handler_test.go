@@ -95,10 +95,10 @@ func TestStartHandlerStreamsSnapshotAndUpdates(t *testing.T) {
 	body := response.Body.String()
 	for _, expected := range []string{
 		`data: {"messageId":"assistant-1","type":"start"}`,
-		`data: {"id":"assistant-1-text","type":"text-start"}`,
-		`data: {"delta":"已有","id":"assistant-1-text","type":"text-delta"}`,
-		`data: {"delta":"续写","id":"assistant-1-text","type":"text-delta"}`,
-		`data: {"id":"assistant-1-text","type":"text-end"}`,
+		`data: {"id":"assistant-1-text-1","type":"text-start"}`,
+		`data: {"delta":"已有","id":"assistant-1-text-1","type":"text-delta"}`,
+		`data: {"delta":"续写","id":"assistant-1-text-1","type":"text-delta"}`,
+		`data: {"id":"assistant-1-text-1","type":"text-end"}`,
 		`data: {"type":"finish"}`,
 		"data: [DONE]",
 	} {
@@ -122,5 +122,44 @@ func TestCancelHandlerPassesAssistantMessageID(t *testing.T) {
 	handler.ServeHTTP(response, request.WithContext(context.WithValue(request.Context(), chi.RouteCtxKey, routeContext)))
 	if response.Code != http.StatusOK {
 		t.Fatalf("got status %d, want %d", response.Code, http.StatusOK)
+	}
+}
+
+func TestStreamSubscriptionKeepsTextAndToolPartsInStepOrder(t *testing.T) {
+	updates := make(chan chat.GenerationUpdate, 8)
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepStart, StepID: "step-1"}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateDelta, Text: "我先查一下。"}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolInput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", Input: map[string]string{"status": "已提交", "tool": "search_question_memory"}}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolOutput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", Output: map[string]string{"status": "已完成", "tool": "search_question_memory"}}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepFinish, StepID: "step-1"}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepStart, StepID: "step-2"}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateDelta, Text: "最终答案。"}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateTerminal, Status: conversation.MessageStatusCompleted}
+
+	response := httptest.NewRecorder()
+	streamSubscription(response, httptest.NewRequest(http.MethodGet, "/chat/assistant-1/stream", nil), chat.GenerationSubscription{
+		Snapshot: chat.GenerationSnapshot{AssistantMessageID: "assistant-1", Status: conversation.MessageStatusStreaming},
+		Updates:  updates,
+	})
+	body := response.Body.String()
+	ordered := []string{
+		`"type":"start-step"`,
+		`"delta":"我先查一下。"`,
+		`"type":"tool-input-start"`,
+		`"type":"tool-output-available"`,
+		`"type":"finish-step"`,
+		`"delta":"最终答案。"`,
+		`"type":"finish"`,
+	}
+	last := -1
+	for _, token := range ordered {
+		next := strings.Index(body[last+1:], token)
+		if next < 0 {
+			t.Fatalf("stream body missing %q:\n%s", token, body)
+		}
+		last += next + 1
+	}
+	if strings.Contains(body, "raw tool payload") {
+		t.Fatalf("stream must not contain raw tool payload:\n%s", body)
 	}
 }

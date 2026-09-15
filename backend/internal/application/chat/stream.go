@@ -95,6 +95,12 @@ func (s *bufferedTextSink) WriteEvent(ctx context.Context, event GenerationEvent
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A model can emit a short text prelude immediately before a ToolCall. Text
+	// persistence is normally batched, while lifecycle events are not; flush the
+	// pending delta first so SSE preserves the original Step order.
+	if err := s.Flush(ctx); err != nil {
+		return err
+	}
 	s.writer.CommitEvent(event)
 	return nil
 }

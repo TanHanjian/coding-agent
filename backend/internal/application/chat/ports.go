@@ -12,6 +12,7 @@ import (
 // active browser stream. Tool payloads are never persisted as chat history.
 type GenerationEvent struct {
 	Kind       GenerationEventKind
+	StepID     string
 	Phase      string
 	ToolCallID string
 	ToolName   string
@@ -23,6 +24,8 @@ type GenerationEvent struct {
 type GenerationEventKind string
 
 const (
+	GenerationEventStepStart       GenerationEventKind = "step-start"
+	GenerationEventStepFinish      GenerationEventKind = "step-finish"
 	GenerationEventPhase           GenerationEventKind = "phase"
 	GenerationEventToolInput       GenerationEventKind = "tool-input"
 	GenerationEventToolOutput      GenerationEventKind = "tool-output"

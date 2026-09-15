@@ -127,9 +127,10 @@ func TestExecutorStreamReturnsRuntimeAndSinkErrors(t *testing.T) {
 	}
 }
 
-func TestExecutorStreamHidesToolMessagesAndForwardsFinalText(t *testing.T) {
+func TestExecutorStreamForwardsTextBeforeAndAfterToolCall(t *testing.T) {
 	executor, err := NewExecutor(&builderStub{runtime: &runtimeStub{
 		reader: schema.StreamReaderFromArray([]*schema.Message{
+			schema.AssistantMessage("我先查一下。", nil),
 			{ToolCalls: []schema.ToolCall{{}}},
 			schema.ToolMessage("internal tool result", "call-1"),
 			schema.AssistantMessage("final answer", nil),
@@ -142,7 +143,7 @@ func TestExecutorStreamHidesToolMessagesAndForwardsFinalText(t *testing.T) {
 	if err := executor.Stream(context.Background(), testRequest(nil), sink); err != nil {
 		t.Fatalf("Stream() error = %v", err)
 	}
-	if got, want := sink.chunks, []string{"final answer"}; !reflect.DeepEqual(got, want) {
+	if got, want := sink.chunks, []string{"我先查一下。", "final answer"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("sink chunks = %#v, want %#v", got, want)
 	}
 	if err := executor.Stream(context.Background(), testRequest(nil), nil); err == nil {
