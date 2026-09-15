@@ -163,8 +163,10 @@ func recordToolResults(
 	return messages, nil
 }
 
-// routeModelOutput scans the model stream for tool calls. It must not route
-// on early text alone: some providers emit text before a later tool-call delta.
+// routeModelOutput decides as soon as the model commits to a turn type. The
+// branch reads a private stream copy, so returning END on the first text chunk
+// lets the original chat_model stream reach Executor immediately. A ToolCall
+// after visible text is a protocol violation and is rejected by Executor.
 func routeModelOutput(
 	ctx context.Context,
 	stream *schema.StreamReader[*schema.Message],
@@ -187,6 +189,9 @@ func routeModelOutput(
 		}
 		if len(message.ToolCalls) > 0 {
 			return "tools", nil
+		}
+		if message.Content != "" {
+			return compose.END, nil
 		}
 	}
 }
@@ -297,8 +302,9 @@ func (b *Builder) Build(ctx context.Context, input chat.BuildInput) (chat.Runtim
 //	├─ 无 ToolCalls → END
 //	└─ 有 ToolCalls → tools → chat_model
 //
-// agentState 只保存下一次模型调用所需的累积上下文和工具轮数；最终回答由
-// Runtime 的输出流交给 Executor 持久化。此方法不读写 SQLite 或持久化 Graph 事件。
+// agentState only stores the accumulated context and tool-round count. The
+// final chat_model text stream is forwarded by Executor. This method does not
+// read SQLite or persist Graph events.
 func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Runnable[GraphInput, *schema.Message], error) {
 	graph := compose.NewGraph[GraphInput, *schema.Message](
 		compose.WithGenLocalState(func(context.Context) *agentState {
@@ -348,7 +354,6 @@ func (b *Builder) buildGraph(ctx context.Context, _ chat.BuildInput) (compose.Ru
 	); err != nil {
 		return nil, err
 	}
-
 	// 边
 	if err := graph.AddEdge(compose.START, "prepare_context"); err != nil {
 		return nil, err

@@ -68,7 +68,8 @@ func main() {
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
 	chatExecutor, err := newChatExecutor(context.Background(), cfg, interview.ToolDependencies{
-		QuestionSearcher: questionService,
+		QuestionSearcher:      questionService,
+		QuestionContextReader: questionService,
 	})
 	if err != nil {
 		slog.Error("configure chat executor", "error", err)

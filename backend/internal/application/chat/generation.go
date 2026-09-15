@@ -16,9 +16,10 @@ type MemoryGenerationHub struct {
 }
 
 type memoryGeneration struct {
-	content     string
-	status      conversation.MessageStatus
-	subscribers map[chan GenerationUpdate]struct{}
+	content        string
+	status         conversation.MessageStatus
+	eventSummaries []GenerationEvent
+	subscribers    map[chan GenerationUpdate]struct{}
 }
 
 func NewMemoryGenerationHub() *MemoryGenerationHub {
@@ -50,6 +51,22 @@ func (h *MemoryGenerationHub) PublishText(assistantMessageID, text string) {
 	h.broadcast(run, GenerationUpdate{Kind: GenerationUpdateDelta, Text: text})
 }
 
+// PublishEvent sends a live lifecycle event. Only status summaries are kept
+// for reconnects: full tool arguments and results remain transient.
+func (h *MemoryGenerationHub) PublishEvent(assistantMessageID string, event GenerationEvent) {
+	if assistantMessageID == "" {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	run := h.runs[assistantMessageID]
+	if run == nil || run.status != conversation.MessageStatusStreaming {
+		return
+	}
+	run.eventSummaries = append(run.eventSummaries, GenerationEvent{Kind: event.Kind, Phase: event.Phase, ToolCallID: event.ToolCallID, ToolName: event.ToolName, ErrorText: event.ErrorText})
+	h.broadcast(run, GenerationUpdate{Kind: GenerationUpdateEvent, Event: event})
+}
+
 func (h *MemoryGenerationHub) Complete(message conversation.Message) {
 	if message.ID == "" || message.Role != conversation.MessageRoleAssistant || message.Status == conversation.MessageStatusStreaming {
 		return
@@ -79,7 +96,7 @@ func (h *MemoryGenerationHub) Subscribe(assistantMessageID string) (GenerationSu
 		return GenerationSubscription{}, false
 	}
 	run.subscribers[ch] = struct{}{}
-	snapshot := GenerationSnapshot{AssistantMessageID: assistantMessageID, Content: run.content, Status: run.status}
+	snapshot := GenerationSnapshot{AssistantMessageID: assistantMessageID, Content: run.content, Status: run.status, EventSummaries: append([]GenerationEvent(nil), run.eventSummaries...)}
 	h.mu.Unlock()
 	return GenerationSubscription{Snapshot: snapshot, Updates: ch, close: func() {
 		once.Do(func() {
@@ -109,18 +126,21 @@ type GenerationSnapshot struct {
 	AssistantMessageID string
 	Content            string
 	Status             conversation.MessageStatus
+	EventSummaries     []GenerationEvent
 }
 
 type GenerationUpdate struct {
 	Kind   GenerationUpdateKind
 	Text   string
 	Status conversation.MessageStatus
+	Event  GenerationEvent
 }
 
 type GenerationUpdateKind string
 
 const (
 	GenerationUpdateDelta    GenerationUpdateKind = "delta"
+	GenerationUpdateEvent    GenerationUpdateKind = "event"
 	GenerationUpdateTerminal GenerationUpdateKind = "terminal"
 )
 
@@ -128,6 +148,7 @@ const (
 type GenerationHub interface {
 	Open(conversation.Message)
 	PublishText(assistantMessageID, text string)
+	PublishEvent(assistantMessageID string, event GenerationEvent)
 	Complete(conversation.Message)
 	Subscribe(assistantMessageID string) (GenerationSubscription, bool)
 }

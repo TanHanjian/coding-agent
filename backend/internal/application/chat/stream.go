@@ -15,8 +15,9 @@ type TextBufferPolicy struct {
 }
 
 var DefaultTextBufferPolicy = TextBufferPolicy{
-	MaxBytes: 512,
-	MaxWait:  300 * time.Millisecond,
+	// Keep SSE visibly incremental while still batching SQLite writes.
+	MaxBytes: 64,
+	MaxWait:  80 * time.Millisecond,
 }
 
 // bufferedTextSink 的维度是一条 assistant Message，也就是一个 Generation。
@@ -90,6 +91,14 @@ func (s *bufferedTextSink) flush(ctx context.Context, expectedTimerID uint64) er
 
 // WriteChunk 接收模型产生的短文本，并在 MaxBytes 达到时立即触发 Flush。
 // MaxWait 由首次写入时启动的 timer 保证。
+func (s *bufferedTextSink) WriteEvent(ctx context.Context, event GenerationEvent) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	s.writer.CommitEvent(event)
+	return nil
+}
+
 func (s *bufferedTextSink) WriteChunk(ctx context.Context, chunk string) error {
 	if chunk == "" {
 		return nil
@@ -147,6 +156,10 @@ func newGenerationTextWriter(store TurnStore, hub GenerationHub, assistantMessag
 }
 
 // CommitText 处理已经聚合完成的一批文本：先写 SQLite，再广播 Hub。
+func (w *generationTextWriter) CommitEvent(event GenerationEvent) {
+	w.hub.PublishEvent(w.assistantMessageID, event)
+}
+
 func (w *generationTextWriter) CommitText(ctx context.Context, textBatch string) error {
 	if textBatch == "" {
 		return nil

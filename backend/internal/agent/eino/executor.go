@@ -67,7 +67,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	if err != nil {
 		return err
 	}
-	runtimeOptions := make([]compose.Option, 0, 1)
+	runtimeOptions := []compose.Option{compose.WithCallbacks(newGraphEventCallbacks(req, sink)...)}
 	if e.graphDebugLogging {
 		runtimeOptions = append(runtimeOptions, compose.WithCallbacks(newGraphDebugCallbacks(req)...))
 	}
@@ -80,6 +80,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		return err
 	}
 	defer reader.Close()
+	answerStarted := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -96,10 +97,28 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 			return fmt.Errorf("receive runtime stream: %w", err)
 		}
 
-		if chunk == nil || chunk.Role == schema.Tool || len(chunk.ToolCalls) > 0 || chunk.Content == "" {
+		if chunk == nil || chunk.Role == schema.Tool {
+			continue
+		}
+		if len(chunk.ToolCalls) > 0 {
+			if answerStarted {
+				return errors.New("agent output protocol violation: tool call after final text")
+			}
+			continue
+		}
+		if chunk.Content == "" {
 			continue
 		}
 
+		if !answerStarted {
+			if err := sink.WriteEvent(ctx, chat.GenerationEvent{Kind: chat.GenerationEventPhase, Phase: "answering"}); err != nil {
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+				return fmt.Errorf("write agent status: %w", err)
+			}
+			answerStarted = true
+		}
 		if err := sink.WriteChunk(ctx, chunk.Content); err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr

@@ -154,14 +154,14 @@ func TestExecutorStreamHidesToolMessagesAndForwardsFinalText(t *testing.T) {
 	}
 }
 
-func TestExecutorPassesGraphDebugCallbacksOnlyWhenEnabled(t *testing.T) {
+func TestExecutorPassesGraphEventCallbacksAndOptionalDebugCallbacks(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		debug       bool
 		wantOptions int
 	}{
-		{name: "disabled", debug: false, wantOptions: 0},
-		{name: "enabled", debug: true, wantOptions: 1},
+		{name: "disabled", debug: false, wantOptions: 1},
+		{name: "enabled", debug: true, wantOptions: 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			runtime := &runtimeStub{
@@ -220,6 +220,10 @@ func (s *sinkStub) WriteChunk(_ context.Context, chunk string) error {
 	}
 	s.chunks = append(s.chunks, chunk)
 	return nil
+}
+
+func (s *sinkStub) WriteEvent(_ context.Context, _ chat.GenerationEvent) error {
+	return s.err
 }
 
 func testRequest(history []conversation.Message) chat.Request {

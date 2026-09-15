@@ -112,6 +112,11 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 	}) {
 		return
 	}
+	for _, event := range subscription.Snapshot.EventSummaries {
+		if !stream.writeEventSummary(event) {
+			return
+		}
+	}
 
 	if subscription.Snapshot.Status != conversation.MessageStatusStreaming {
 		stream.writeTerminal(textPartID, subscription.Snapshot.Status)
@@ -140,6 +145,10 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 				}) {
 					return
 				}
+			case chat.GenerationUpdateEvent:
+				if !stream.writeGenerationEvent(update.Event) {
+					return
+				}
 			case chat.GenerationUpdateTerminal:
 				stream.writeTerminal(textPartID, update.Status)
 				return
@@ -149,6 +158,33 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 			}
 		}
 	}
+}
+
+func (w uiMessageStreamWriter) writeGenerationEvent(event chat.GenerationEvent) bool {
+	switch event.Kind {
+	case chat.GenerationEventPhase:
+		return w.writePart(map[string]any{"type": "data-agent-status", "data": map[string]any{"phase": event.Phase}})
+	case chat.GenerationEventToolInput:
+		return w.writePart(map[string]any{"type": "tool-input-start", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "dynamic": true}) &&
+			w.writePart(map[string]any{"type": "tool-input-available", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "input": event.Input, "dynamic": true})
+	case chat.GenerationEventToolOutput:
+		return w.writePart(map[string]any{"type": "tool-output-available", "toolCallId": event.ToolCallID, "output": event.Output, "dynamic": true})
+	case chat.GenerationEventToolOutputError:
+		return w.writePart(map[string]any{"type": "tool-output-error", "toolCallId": event.ToolCallID, "errorText": event.ErrorText, "dynamic": true})
+	default:
+		return false
+	}
+}
+
+func (w uiMessageStreamWriter) writeEventSummary(event chat.GenerationEvent) bool {
+	data := map[string]any{"phase": string(event.Kind), "toolCallId": event.ToolCallID, "toolName": event.ToolName}
+	if event.Phase != "" {
+		data["phase"] = event.Phase
+	}
+	if event.ErrorText != "" {
+		data["errorText"] = event.ErrorText
+	}
+	return w.writePart(map[string]any{"type": "data-agent-status", "data": data})
 }
 
 type uiMessageStreamWriter struct {
