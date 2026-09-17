@@ -12,6 +12,10 @@ type Request struct {
 	History          []conversation.Message
 	UserMessage      conversation.Message
 	AssistantMessage conversation.Message
+	// InterviewContext is optional runtime-only context used by Agent
+	// adapters. HTTP callers leave it empty; evaluation and future trusted
+	// application callers may provide already-sanitized material.
+	InterviewContext string
 }
 
 // RuntimeInput 是一次 Graph 运行所需的服务端可信输入。

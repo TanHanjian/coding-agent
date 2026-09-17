@@ -201,8 +201,8 @@ func (s *uiMessageStreamSession) writeGenerationEvent(event chat.GenerationEvent
 		return s.writeStatus(event, event.Phase)
 	case chat.GenerationEventToolInput:
 		return s.closeText() &&
-			s.writePart(map[string]any{"type": "tool-input-start", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)}) &&
-			s.writePart(map[string]any{"type": "tool-input-available", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "input": event.Input, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
+			s.writePart(map[string]any{"type": "tool-input-start", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "title": event.ToolTitle, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)}) &&
+			s.writePart(map[string]any{"type": "tool-input-available", "toolCallId": event.ToolCallID, "toolName": event.ToolName, "title": event.ToolTitle, "input": event.Input, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
 	case chat.GenerationEventToolOutput:
 		return s.writePart(map[string]any{"type": "tool-output-available", "toolCallId": event.ToolCallID, "output": event.Output, "dynamic": true, "toolMetadata": stepMetadata(event.StepID)})
 	case chat.GenerationEventToolOutputError:

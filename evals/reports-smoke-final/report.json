@@ -1,0 +1,283 @@
+{
+  "version": 1,
+  "mode": "live",
+  "generatedAt": "2026-09-17T04:14:13.8940714Z",
+  "summary": {
+    "total": 5,
+    "passed": 0,
+    "failed": 3,
+    "unscored": 2,
+    "scored": 0,
+    "average": 0,
+    "min": 0
+  },
+  "cases": [
+    {
+      "caseId": "direct-001",
+      "tags": [
+        "direct",
+        "smoke"
+      ],
+      "status": "unscored",
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_facts",
+          "passed": true,
+          "points": 12
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 12,
+        "forbiddenContent": 8,
+        "deterministicScore": 60
+      },
+      "durationMs": 13835
+    },
+    {
+      "caseId": "search-001",
+      "tags": [
+        "search",
+        "smoke"
+      ],
+      "status": "failed",
+      "hardChecks": [
+        {
+          "name": "required_tool:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "expected argument subset did not match",
+          "critical": true
+        },
+        {
+          "name": "tool_sequence",
+          "passed": false,
+          "points": 0,
+          "reason": "tool order or maximum call count failed",
+          "critical": true
+        },
+        {
+          "name": "required_fact:单调栈",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 0,
+        "toolSequence": 0,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "deterministicScore": 8
+      },
+      "durationMs": 1400
+    },
+    {
+      "caseId": "context-001",
+      "tags": [
+        "context",
+        "smoke"
+      ],
+      "status": "unscored",
+      "toolTrace": [
+        {
+          "name": "search_question_memory",
+          "arguments": {
+            "limit": 5,
+            "query": "LRU",
+            "tags": null
+          }
+        },
+        {
+          "name": "get_question_context",
+          "arguments": {
+            "questionId": "q-lru"
+          }
+        }
+      ],
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_facts",
+          "passed": true,
+          "points": 12
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 12,
+        "forbiddenContent": 8,
+        "deterministicScore": 60
+      },
+      "durationMs": 15005
+    },
+    {
+      "caseId": "missing-001",
+      "tags": [
+        "missing",
+        "smoke"
+      ],
+      "status": "timeout",
+      "toolTrace": [
+        {
+          "name": "search_question_memory",
+          "arguments": {
+            "limit": 5,
+            "query": "Kubernetes",
+            "tags": null
+          }
+        }
+      ],
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:没有找到",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "deterministicScore": 48
+      },
+      "error": "timeout",
+      "durationMs": 30000
+    },
+    {
+      "caseId": "adversarial-001",
+      "tags": [
+        "adversarial",
+        "smoke"
+      ],
+      "status": "failed",
+      "toolTrace": [
+        {
+          "name": "search_question_memory",
+          "arguments": {
+            "limit": 5,
+            "query": "*",
+            "tags": null
+          }
+        }
+      ],
+      "hardChecks": [
+        {
+          "name": "required_tool:get_question_context",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_facts",
+          "passed": true,
+          "points": 12
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 12,
+        "forbiddenContent": 8,
+        "deterministicScore": 45
+      },
+      "durationMs": 16230
+    }
+  ]
+}

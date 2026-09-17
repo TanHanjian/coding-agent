@@ -75,7 +75,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	reader, err := rt.Stream(ctx, chat.RuntimeInput{
 		History:          schemaHistory,
 		Query:            req.UserMessage.Content,
-		InterviewContext: "",
+		InterviewContext: req.InterviewContext,
 	}, runtimeOptions...)
 	if err != nil {
 		return err
@@ -115,7 +115,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		// the ChatModel callback already forwards every model delta immediately.
 		// Keep this path for lightweight Runtime stubs that do not execute
 		// callbacks, but never duplicate final text in a real run.
-		if steps.HasStarted() {
+		if steps.HasForwarded() {
 			continue
 		}
 

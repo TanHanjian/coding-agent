@@ -16,6 +16,7 @@ type GenerationEvent struct {
 	Phase      string
 	ToolCallID string
 	ToolName   string
+	ToolTitle  string
 	Input      any
 	Output     any
 	ErrorText  string

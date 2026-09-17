@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { createConversation, listConversations, listMessages } from './chat-api'
+import { createConversation, deleteConversation, listConversations, listMessages } from './chat-api'
 import { ChatPane } from './components/ChatPane'
 import { ConversationSidebar } from './components/ConversationSidebar'
 import './chat.css'
@@ -14,6 +14,7 @@ export function ChatWorkspace() {
   const [historyVersion, setHistoryVersion] = useState(0)
   const [isLoadingConversations, setIsLoadingConversations] = useState(true)
   const [isLoadingMessages, setIsLoadingMessages] = useState(false)
+  const [deletingConversationID, setDeletingConversationID] = useState<string>()
   const [error, setError] = useState<string>()
   const messageRequestSequence = useRef(0)
 
@@ -79,14 +80,37 @@ export function ChatWorkspace() {
     setActiveConversationID(conversationID)
   }
 
+  async function handleDelete(conversation: Conversation) {
+    if (!window.confirm(`确定删除“${conversation.title.trim() || '未命名对话'}”吗？其中的全部消息也会被删除。`)) return
+    setDeletingConversationID(conversation.id)
+    try {
+      await deleteConversation(conversation.id)
+      const next = conversations.filter((item) => item.id !== conversation.id)
+      setConversations(next)
+      if (activeConversationID === conversation.id) {
+        messageRequestSequence.current += 1
+        setPersistedMessages([])
+        setLoadedConversationID(undefined)
+        setActiveConversationID(next[0]?.id)
+      }
+      setError(undefined)
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : '无法删除会话。')
+    } finally {
+      setDeletingConversationID(undefined)
+    }
+  }
+
   return (
     <div className="chat-workspace">
       <ConversationSidebar
         conversations={conversations}
         activeConversationID={activeConversationID}
         isLoading={isLoadingConversations}
+        deletingConversationID={deletingConversationID}
         onCreate={() => void handleCreate()}
         onSelect={handleSelect}
+        onDelete={(conversation) => void handleDelete(conversation)}
       />
       {activeConversation && loadedConversationID === activeConversation.id ? (
         <ChatPane

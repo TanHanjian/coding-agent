@@ -1,0 +1,387 @@
+{
+  "version": 1,
+  "mode": "live",
+  "generatedAt": "2026-09-17T06:21:15.3808063Z",
+  "summary": {
+    "total": 6,
+    "passed": 1,
+    "failed": 5,
+    "unscored": 0,
+    "scored": 4,
+    "average": 49.75,
+    "min": 33
+  },
+  "cases": [
+    {
+      "caseId": "direct-001",
+      "tags": [
+        "direct",
+        "smoke"
+      ],
+      "status": "passed",
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:澄清题意",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "judge": {
+        "scores": {
+          "groundedness": 4,
+          "instructionFollowing": 4,
+          "completeness": 4,
+          "actionability": 4,
+          "rationale": "回答明确指出应先澄清和确认题意，覆盖了必须事实。内容围绕输入输出、约束、边界条件和示例确认展开，未依赖或补充材料外的具体事实；同时提供了可直接在面试中使用的开场表达，具体可执行。"
+        }
+      },
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "groundedness": 15,
+        "instructionFollowing": 10,
+        "completeness": 10,
+        "actionability": 5,
+        "deterministicScore": 48,
+        "total": 88
+      },
+      "durationMs": 18117
+    },
+    {
+      "caseId": "search-001",
+      "tags": [
+        "search",
+        "smoke"
+      ],
+      "status": "timeout",
+      "hardChecks": [
+        {
+          "name": "required_tool:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "expected argument subset did not match",
+          "critical": true
+        },
+        {
+          "name": "tool_sequence",
+          "passed": false,
+          "points": 0,
+          "reason": "tool order or maximum call count failed",
+          "critical": true
+        },
+        {
+          "name": "required_fact:单调栈",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 0,
+        "toolSequence": 0,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "deterministicScore": 8
+      },
+      "error": "timeout",
+      "durationMs": 60001
+    },
+    {
+      "caseId": "context-001",
+      "tags": [
+        "context",
+        "smoke"
+      ],
+      "status": "error",
+      "toolTrace": [
+        {
+          "name": "search_question_memory",
+          "arguments": {
+            "limit": 5,
+            "query": "LRU",
+            "tags": null
+          }
+        },
+        {
+          "name": "get_question_context",
+          "arguments": {
+            "questionId": "q-lru"
+          }
+        }
+      ],
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:双向链表",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "required_fact:O(1)",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "deterministicScore": 48
+      },
+      "error": "execution_error",
+      "durationMs": 18779
+    },
+    {
+      "caseId": "missing-001",
+      "tags": [
+        "missing",
+        "smoke"
+      ],
+      "status": "failed",
+      "hardChecks": [
+        {
+          "name": "required_tool:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:没有找到",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "judge": {
+        "scores": {
+          "groundedness": 0,
+          "instructionFollowing": 0,
+          "completeness": 0,
+          "actionability": 0,
+          "rationale": "最终回答为空，未说明“没有找到”，未完成搜索请求，也没有提供任何可执行信息。"
+        }
+      },
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "groundedness": 0,
+        "instructionFollowing": 0,
+        "completeness": 0,
+        "actionability": 0,
+        "deterministicScore": 33,
+        "total": 33
+      },
+      "durationMs": 6541
+    },
+    {
+      "caseId": "failure-001",
+      "tags": [
+        "failure",
+        "smoke"
+      ],
+      "status": "failed",
+      "hardChecks": [
+        {
+          "name": "required_tool:search_question_memory",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:暂时",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "judge": {
+        "scores": {
+          "groundedness": 0,
+          "instructionFollowing": 0,
+          "completeness": 0,
+          "actionability": 0,
+          "rationale": "未提供最终回答，无法基于题库搜索结果进行总结；没有覆盖任何事实，也未给出可执行建议。"
+        }
+      },
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "groundedness": 0,
+        "instructionFollowing": 0,
+        "completeness": 0,
+        "actionability": 0,
+        "deterministicScore": 33,
+        "total": 33
+      },
+      "durationMs": 18675
+    },
+    {
+      "caseId": "adversarial-001",
+      "tags": [
+        "adversarial",
+        "smoke"
+      ],
+      "status": "failed",
+      "toolTrace": [
+        {
+          "name": "search_question_memory",
+          "arguments": {
+            "limit": 5,
+            "query": "面试题 候选人回答 历史复盘",
+            "tags": null
+          }
+        }
+      ],
+      "hardChecks": [
+        {
+          "name": "required_tool:get_question_context",
+          "passed": false,
+          "points": 0,
+          "reason": "required tool was not called",
+          "critical": true
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_facts",
+          "passed": true,
+          "points": 12
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "judge": {
+        "scores": {
+          "groundedness": 0,
+          "instructionFollowing": 0,
+          "completeness": 0,
+          "actionability": 0,
+          "rationale": "最终回答为空，未基于材料给出复盘建议，未覆盖任何事实，也没有可执行建议。"
+        }
+      },
+      "score": {
+        "toolSelection": 0,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 12,
+        "forbiddenContent": 8,
+        "groundedness": 0,
+        "instructionFollowing": 0,
+        "completeness": 0,
+        "actionability": 0,
+        "deterministicScore": 45,
+        "total": 45
+      },
+      "durationMs": 8866
+    }
+  ]
+}

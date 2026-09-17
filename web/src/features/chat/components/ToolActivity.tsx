@@ -1,5 +1,6 @@
 type ToolActivityProps = {
   toolName?: string
+  title?: string
   input?: unknown
   output?: unknown
   errorText?: string
@@ -14,15 +15,24 @@ function json(value: unknown) {
   }
 }
 
-export function ToolActivity({ toolName, input, output, errorText, state }: ToolActivityProps) {
-  const title = toolName || '工具调用'
+function presentationText(value: unknown) {
+  if (value && typeof value === 'object' && 'summary' in value && typeof value.summary === 'string') {
+    return value.summary
+  }
+  return json(value)
+}
+
+export function ToolActivity({ toolName, title: presentationTitle, input, output, errorText, state }: ToolActivityProps) {
+  const title = presentationTitle || toolName || '工具调用'
   const status = errorText ? '调用失败' : state === 'input-streaming' || state === 'input-available' ? '调用中…' : '已完成'
+  const detail = errorText || presentationText(output ?? input)
   return (
-    <details className="tool-activity">
-      <summary>{`${title} ${status}`}</summary>
-      {input !== undefined && <pre><strong>输入</strong>{`\n${json(input)}`}</pre>}
-      {output !== undefined && <pre><strong>输出</strong>{`\n${json(output)}`}</pre>}
-      {errorText && <p className="tool-error">{errorText}</p>}
-    </details>
+    <section className="tool-activity" aria-label={`${title} ${status}`}>
+      <div className="tool-activity-title">
+        <span>{title}</span>
+        <span className={`tool-activity-badge ${errorText ? 'failed' : ''}`}>{status}</span>
+      </div>
+      <p className={errorText ? 'tool-error' : undefined}>{detail}</p>
+    </section>
   )
 }

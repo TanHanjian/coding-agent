@@ -65,7 +65,7 @@
 }
 
 .new-chat-button:hover,
-.conversation-item:hover { background: #eceef3; }
+.conversation-row:hover .conversation-item { background: #eceef3; }
 
 .new-chat-icon {
   font-size: 20px;
@@ -98,22 +98,44 @@
   padding-bottom: 14px;
 }
 
+.conversation-row { position: relative; min-width: 0; }
+
 .conversation-item {
   overflow: hidden;
   min-height: 39px;
   border-radius: 9px;
-  padding: 0 12px;
+  padding: 0 42px 0 12px;
   font-size: 14px;
   line-height: 39px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.conversation-item.active {
+.conversation-row.active .conversation-item {
   color: #30333a;
   background: #e7e9ef;
   font-weight: 580;
 }
+
+.conversation-delete {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  width: 25px;
+  height: 25px;
+  border: 0;
+  border-radius: 6px;
+  color: #7b8494;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+  opacity: 0;
+}
+.conversation-row:hover .conversation-delete,
+.conversation-row:focus-within .conversation-delete { opacity: 1; }
+.conversation-delete:hover { color: #b42318; background: #fdecec; }
+.conversation-delete:disabled { cursor: wait; opacity: 1; }
 
 .empty-history {
   margin: 8px 12px;
@@ -355,17 +377,32 @@
 .start-chat-button { margin-top: 20px; padding: 10px 16px; border: 0; border-radius: 9px; color: #fff; background: #3c78f4; }
 
 .tool-activity {
-  margin: 0 0 10px;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
+  position: relative;
+  max-width: 360px;
+  margin: 4px 0 12px;
+  padding: 10px 12px 10px 15px;
+  border: 1px solid #e5ebf5;
+  border-radius: 10px;
+  background: #fbfcff;
   color: #334155;
   font-size: 13px;
 }
-.tool-activity summary { padding: 8px 10px; cursor: pointer; user-select: none; }
-.tool-activity pre { margin: 0; padding: 10px; overflow: auto; border-top: 1px solid #e5e7eb; white-space: pre-wrap; }
+.tool-activity::before {
+  position: absolute;
+  top: 12px;
+  bottom: 12px;
+  left: 0;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: #7aa2f7;
+  content: '';
+}
+.tool-activity-title { display: flex; align-items: center; gap: 8px; color: #1e3a5f; font-weight: 600; }
+.tool-activity-badge { padding: 2px 7px; border-radius: 999px; background: #eaf1ff; color: #4b75bc; font-size: 12px; font-weight: 500; }
+.tool-activity-badge.failed { background: #fef0f0; color: #b42318; }
+.tool-activity p { margin: 5px 0 0; color: #64748b; line-height: 1.45; }
 .agent-status { margin: 0 0 10px; color: #64748b; font-size: 13px; }
-.tool-error { padding: 0 10px 10px; color: #b91c1c; }
+.tool-activity p.tool-error { color: #b42318; }
 
 @media (max-width: 720px) {
   .chat-sidebar { width: 70px; padding: 18px 8px 12px; }

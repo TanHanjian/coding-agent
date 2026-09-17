@@ -129,8 +129,8 @@ func TestStreamSubscriptionKeepsTextAndToolPartsInStepOrder(t *testing.T) {
 	updates := make(chan chat.GenerationUpdate, 8)
 	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepStart, StepID: "step-1"}}
 	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateDelta, Text: "我先查一下。"}
-	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolInput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", Input: map[string]string{"status": "已提交", "tool": "search_question_memory"}}}
-	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolOutput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", Output: map[string]string{"status": "已完成", "tool": "search_question_memory"}}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolInput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", ToolTitle: "检索题库", Input: map[string]string{"summary": "正在检索题库"}}}
+	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventToolOutput, StepID: "step-1", ToolCallID: "call-1", ToolName: "search_question_memory", ToolTitle: "检索题库", Output: map[string]string{"summary": "已获取题库资料"}}}
 	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepFinish, StepID: "step-1"}}
 	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateEvent, Event: chat.GenerationEvent{Kind: chat.GenerationEventStepStart, StepID: "step-2"}}
 	updates <- chat.GenerationUpdate{Kind: chat.GenerationUpdateDelta, Text: "最终答案。"}
@@ -161,5 +161,8 @@ func TestStreamSubscriptionKeepsTextAndToolPartsInStepOrder(t *testing.T) {
 	}
 	if strings.Contains(body, "raw tool payload") {
 		t.Fatalf("stream must not contain raw tool payload:\n%s", body)
+	}
+	if !strings.Contains(body, `"title":"检索题库"`) || !strings.Contains(body, "正在检索题库") {
+		t.Fatalf("stream must contain the safe tool presentation:\n%s", body)
 	}
 }

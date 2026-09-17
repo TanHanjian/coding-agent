@@ -8,6 +8,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
     const error = await response.json().catch(() => null) as { error?: { message?: string } } | null
     throw new Error(error?.error?.message ?? `请求失败（${response.status}）`)
   }
+  if (response.status === 204) {
+    return undefined as T
+  }
   return response.json() as Promise<T>
 }
 
@@ -21,6 +24,10 @@ export function createConversation() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ title: '新对话' }),
   })
+}
+
+export function deleteConversation(conversationID: string) {
+  return request<void>(`/conversations/${conversationID}`, { method: 'DELETE' })
 }
 
 export function listMessages(conversationID: string) {

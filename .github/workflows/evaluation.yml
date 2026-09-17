@@ -1,0 +1,60 @@
+name: Agent evaluation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  validate:
+    name: Validate evaluation harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+      - name: Run Go tests
+        working-directory: backend
+        run: go test ./...
+      - name: Validate dataset
+        working-directory: backend
+        run: go run ./cmd/eval --mode validate --dataset ../evals/interview-agent.v1.jsonl
+
+  smoke:
+    name: Live smoke evaluation (advisory)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
+      OPENAI_MODEL: ${{ secrets.OPENAI_MODEL }}
+      EVAL_JUDGE_API_KEY: ${{ secrets.EVAL_JUDGE_API_KEY }}
+      EVAL_JUDGE_BASE_URL: ${{ secrets.EVAL_JUDGE_BASE_URL }}
+      EVAL_JUDGE_MODEL: ${{ secrets.EVAL_JUDGE_MODEL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+      - name: Run smoke cases when model secrets are configured
+        working-directory: backend
+        shell: bash
+        run: |
+          if [[ -z "$OPENAI_API_KEY" || -z "$OPENAI_MODEL" ]]; then
+            echo "Live smoke skipped: candidate model secrets are not configured"
+            exit 0
+          fi
+          go run ./cmd/eval --mode live --tag smoke --dataset ../evals/interview-agent.v1.jsonl --output ../evals/reports || {
+            echo "::warning::Live smoke evaluation failed; inspect the uploaded report"
+            exit 0
+          }
+      - name: Upload smoke report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-evaluation-smoke
+          path: evals/reports/
+          if-no-files-found: ignore

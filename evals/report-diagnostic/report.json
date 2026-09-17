@@ -1,0 +1,61 @@
+{
+  "version": 1,
+  "mode": "live",
+  "generatedAt": "2026-09-17T04:09:24.4271935Z",
+  "summary": {
+    "total": 1,
+    "passed": 0,
+    "failed": 1,
+    "unscored": 0,
+    "scored": 0,
+    "average": 0,
+    "min": 0
+  },
+  "cases": [
+    {
+      "caseId": "direct-001",
+      "tags": [
+        "direct",
+        "smoke"
+      ],
+      "status": "failed",
+      "hardChecks": [
+        {
+          "name": "tool_selection",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_arguments",
+          "passed": true,
+          "points": 15
+        },
+        {
+          "name": "tool_sequence",
+          "passed": true,
+          "points": 10
+        },
+        {
+          "name": "required_fact:澄清题意",
+          "passed": false,
+          "points": 0,
+          "reason": "required fact is missing"
+        },
+        {
+          "name": "forbidden_content",
+          "passed": true,
+          "points": 8
+        }
+      ],
+      "score": {
+        "toolSelection": 15,
+        "toolArguments": 15,
+        "toolSequence": 10,
+        "requiredFacts": 0,
+        "forbiddenContent": 8,
+        "deterministicScore": 48
+      },
+      "durationMs": 10363
+    }
+  ]
+}

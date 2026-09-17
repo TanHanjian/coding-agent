@@ -4,8 +4,10 @@ type Props = {
   conversations: Conversation[]
   activeConversationID?: string
   isLoading: boolean
+  deletingConversationID?: string
   onCreate: () => void
   onSelect: (conversationID: string) => void
+  onDelete: (conversation: Conversation) => void
 }
 
 function formatConversationTitle(conversation: Conversation) {
@@ -16,8 +18,10 @@ export function ConversationSidebar({
   conversations,
   activeConversationID,
   isLoading,
+  deletingConversationID,
   onCreate,
   onSelect,
+  onDelete,
 }: Props) {
   return (
     <aside className="chat-sidebar">
@@ -33,15 +37,25 @@ export function ConversationSidebar({
       </div>
       <nav className="conversation-list" aria-label="历史会话">
         {conversations.map((conversation) => (
-          <button
-            className={conversation.id === activeConversationID ? 'conversation-item active' : 'conversation-item'}
-            key={conversation.id}
-            type="button"
-            title={formatConversationTitle(conversation)}
-            onClick={() => onSelect(conversation.id)}
-          >
-            {formatConversationTitle(conversation)}
-          </button>
+          <div className={conversation.id === activeConversationID ? 'conversation-row active' : 'conversation-row'} key={conversation.id}>
+            <button
+              className="conversation-item"
+              type="button"
+              title={formatConversationTitle(conversation)}
+              onClick={() => onSelect(conversation.id)}
+            >
+              {formatConversationTitle(conversation)}
+            </button>
+            <button
+              className="conversation-delete"
+              type="button"
+              aria-label={`删除会话：${formatConversationTitle(conversation)}`}
+              disabled={deletingConversationID === conversation.id}
+              onClick={() => onDelete(conversation)}
+            >
+              {deletingConversationID === conversation.id ? '…' : '×'}
+            </button>
+          </div>
         ))}
         {!isLoading && conversations.length === 0 && <p className="empty-history">还没有会话</p>}
       </nav>

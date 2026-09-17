@@ -282,7 +282,7 @@ func newPromptTemplateNode() *prompt.DefaultChatTemplate {
 }
 
 // NewBuilder 创建 RuntimeBuilder。传入 ToolCallingChatModel 而非 BaseChatModel，
-// 使后续实现能安全地绑定工具，而不用在运行时做类型断言。tools 是允许 Agent
+// 使后续实现能安全地绑定工具，而不用在运行时做类型断言。tools	 是允许 Agent
 // 调用的完整工具集合；首版可不传入工具。
 func NewBuilder(chatModel model.ToolCallingChatModel, tools ...tool.BaseTool) (*Builder, error) {
 	if chatModel == nil {

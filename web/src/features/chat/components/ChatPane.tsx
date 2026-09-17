@@ -18,6 +18,7 @@ type Props = {
 type ToolPart = {
   type: string
   toolName?: string
+  title?: string
   input?: unknown
   output?: unknown
   errorText?: string
@@ -34,6 +35,18 @@ function messageText(message: { parts: Array<{ type: string; text?: string }> })
     .filter((part) => part.type === 'text')
     .map((part) => part.text ?? '')
     .join('')
+}
+
+function hasLaterPhase(parts: readonly { type: string; data?: unknown }[], index: number, phase: string) {
+  return parts.slice(index + 1).some((part) => {
+    if (part.type !== 'data-agent-status' || !part.data || typeof part.data !== 'object') return false
+    return 'phase' in part.data && part.data.phase === phase
+  })
+}
+
+function toolCallIsActive(parts: readonly ToolPart[], index: number) {
+  const tool = parts.slice(index + 1).find((part) => part.type === 'dynamic-tool')
+  return !tool || tool.state === 'input-streaming' || tool.state === 'input-available'
 }
 
 export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFinished }: Props) {
@@ -124,6 +137,7 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
                         return <ToolActivity
                           key={`${message.id}-tool-${index}`}
                           toolName={tool.toolName}
+                          title={tool.title}
                           input={tool.input}
                           output={tool.output}
                           errorText={tool.errorText}
@@ -133,9 +147,15 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
                       if (part.type === 'data-agent-status') {
                         const statusPart = part as AgentStatusPart
                         const phase = statusPart.data?.phase
-                        if (!phase || phase === 'step-start' || phase === 'step-finish' || phase === 'answering') return null
+                        if (!phase || phase === 'step-start' || phase === 'step-finish') return null
+                        if (phase === 'thinking' && hasLaterPhase(message.parts, index, 'calling-tool')) return null
+                        if (phase === 'calling-tool') {
+                          return toolCallIsActive(message.parts as ToolPart[], index) ? (
+                            <p className="agent-status" key={`${message.id}-status-${index}`}>正在调用工具…</p>
+                          ) : null
+                        }
                         return <p className="agent-status" key={`${message.id}-status-${index}`}>
-                          {phase === 'calling-tool' ? '正在调用工具…' : '正在思考…'}
+                          {phase === 'answering' ? '正在回答…' : '正在思考…'}
                         </p>
                       }
                       return null
