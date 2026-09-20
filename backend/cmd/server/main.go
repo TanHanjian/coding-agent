@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	agentcontext "interview-memory-agent/backend/internal/agent/context"
 	"interview-memory-agent/backend/internal/agent/eino"
 	"interview-memory-agent/backend/internal/agent/interview"
 	chat "interview-memory-agent/backend/internal/application/chat"
@@ -123,7 +124,11 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 	if err != nil {
 		return nil, fmt.Errorf("create interview runtime builder: %w", err)
 	}
-	chatExecutor, err := eino.NewExecutor(runtimeBuilder, eino.WithGraphDebugLogging(cfg.AgentDebug))
+	chatExecutor, err := eino.NewExecutor(
+		runtimeBuilder,
+		eino.WithContextManager(agentcontext.NewManager()),
+		eino.WithGraphDebugLogging(cfg.AgentDebug),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("create chat executor: %w", err)
 	}

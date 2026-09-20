@@ -18,6 +18,7 @@ import (
 // 也不决定 Graph、提示词、工具或模型。
 type Executor struct {
 	builder           chat.RuntimeBuilder
+	contextManager    chat.ContextManager
 	graphDebugLogging bool
 }
 
@@ -31,11 +32,24 @@ func WithGraphDebugLogging(enabled bool) Option {
 	}
 }
 
+// WithContextManager injects the top-level context assembly seam. A nil
+// manager is ignored so callers can construct the executor incrementally.
+func WithContextManager(manager chat.ContextManager) Option {
+	return func(executor *Executor) {
+		if manager != nil {
+			executor.contextManager = manager
+		}
+	}
+}
+
 func NewExecutor(builder chat.RuntimeBuilder, options ...Option) (*Executor, error) {
 	if builder == nil {
 		return nil, errors.New("chat executor: runtime builder is required")
 	}
-	executor := &Executor{builder: builder}
+	executor := &Executor{
+		builder:        builder,
+		contextManager: chat.PassThroughContextManager{},
+	}
 	for _, option := range options {
 		if option != nil {
 			option(executor)
@@ -55,15 +69,25 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		return errors.New("chat executor: text sink is required")
 	}
 
+	prepared, err := e.contextManager.Prepare(ctx, chat.ContextInput{
+		Conversation:     req.Conversation,
+		History:          req.History,
+		UserMessage:      req.UserMessage,
+		InterviewContext: req.InterviewContext,
+	})
+	if err != nil {
+		return fmt.Errorf("prepare agent context: %w", err)
+	}
+
 	rt, err := e.builder.Build(ctx, chat.BuildInput{
 		Conversation: req.Conversation,
-		History:      req.History,
+		History:      prepared.History,
 		UserMessage:  req.UserMessage,
 	})
 	if err != nil {
 		return err
 	}
-	schemaHistory, err := toSchemaHistory(req.History)
+	schemaHistory, err := toSchemaHistory(prepared.History)
 	if err != nil {
 		return err
 	}
@@ -72,11 +96,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	if e.graphDebugLogging {
 		runtimeOptions = append(runtimeOptions, compose.WithCallbacks(newGraphDebugCallbacks(req)...))
 	}
-	reader, err := rt.Stream(ctx, chat.RuntimeInput{
-		History:          schemaHistory,
-		Query:            req.UserMessage.Content,
-		InterviewContext: req.InterviewContext,
-	}, runtimeOptions...)
+	reader, err := rt.Stream(ctx, prepared.ToRuntimeInput(schemaHistory), runtimeOptions...)
 	if err != nil {
 		return err
 	}

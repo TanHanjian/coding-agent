@@ -20,9 +20,10 @@ type Request struct {
 
 // RuntimeInput 是一次 Graph 运行所需的服务端可信输入。
 type RuntimeInput struct {
-	History          []*schema.Message
-	Query            string
-	InterviewContext string
+	History             []*schema.Message
+	Query               string
+	InterviewContext    string
+	ConversationSummary string
 }
 
 // BuildInput 包含 Eino Agent 可使用的已持久化上下文。

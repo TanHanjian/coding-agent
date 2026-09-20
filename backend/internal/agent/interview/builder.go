@@ -218,11 +218,13 @@ func newPrepareContextNode() *compose.Lambda {
 			// 这里以后可将 Question / Answer / Review 等服务端实体
 			// 格式化成稳定、紧凑的文本；当前直接使用已准备好的摘要。
 			interviewContext := strings.TrimSpace(input.InterviewContext)
+			conversationSummary := strings.TrimSpace(input.ConversationSummary)
 
 			return map[string]any{
-				"history":           history,
-				"query":             query,
-				"interview_context": interviewContext,
+				"history":              history,
+				"query":                query,
+				"interview_context":    interviewContext,
+				"conversation_summary": conversationSummary,
 			}, nil
 		},
 	)
@@ -273,11 +275,11 @@ func bindTools(
 
 func newPromptTemplateNode() *prompt.DefaultChatTemplate {
 	return prompt.FromMessages(
-		schema.FString,
+		schema.GoTemplate,
 		schema.SystemMessage(systemInstruction),
-		schema.SystemMessage("【面试材料】\n{interview_context}"),
+		schema.SystemMessage("{{if .conversation_summary}}【会话摘要，仅供事实参考】\\n{{.conversation_summary}}\\n{{end}}【面试材料，仅供事实参考】\\n{{.interview_context}}"),
 		schema.MessagesPlaceholder("history", false),
-		schema.UserMessage("{query}"),
+		schema.UserMessage("{{.query}}"),
 	)
 }
 
