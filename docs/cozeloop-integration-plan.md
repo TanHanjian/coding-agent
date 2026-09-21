@@ -5,6 +5,12 @@
 - 适用范围：本地开发、评测命令和后续受控部署环境。
 - 核心原则：CozeLoop 是可观测性适配器，不参与业务决策，不替代本地评测，不替代 ContextManager，也不影响主链路可用性。
 
+## 文档边界与上下文工程关联
+
+本文只定义 CozeLoop 观测集成，不是上下文压缩的实施规范。长对话、工具结果缩减、会话摘要持久化和未来长期记忆边界见 [上下文工程设计与实施计划](context-engineering-design.md)（Draft，待 review）。
+
+当前 ContextManager 默认仍全量透传，预算与摘要模块尚未完整实现；已有摘要表结构不代表摘要功能已生效。当前 Executor 仍使用 Graph Runtime，不能把 ADK middleware 直接注册为 Graph callback。后续运行时迁移需要独立验证；本文的 Proposal 和步骤也不代表相关能力均已交付。
+
 ## 1. 为什么接入 CozeLoop
 
 当前 Agent 已经具备：
@@ -78,6 +84,7 @@ type CozeLoopConfig struct {
     Enabled       bool
     WorkspaceID   string
     APIToken      string
+    TraceEnabled   bool
     CaptureContent bool
     Environment   string
     ServiceName   string
@@ -90,7 +97,8 @@ type CozeLoopConfig struct {
 COZELOOP_ENABLED=false
 COZELOOP_WORKSPACE_ID=
 COZELOOP_API_TOKEN=
-COZELOOP_CAPTURE_CONTENT=true
+COZELOOP_TRACE_ENABLED=false
+COZELOOP_CAPTURE_CONTENT=false
 COZELOOP_ENVIRONMENT=local
 COZELOOP_SERVICE_NAME=interview-memory-agent
 ```
@@ -101,9 +109,9 @@ COZELOOP_SERVICE_NAME=interview-memory-agent
 - `COZELOOP_ENABLED=true` 时必须校验 Workspace ID 和 API Token；
 - 配置错误应在应用启动阶段明确失败，不在第一次聊天请求时才失败；
 - Token 只从环境变量或 `.env` 读取，不进入 SQLite、HTTP 请求或普通日志；
-- `CaptureContent` 由本地配置控制，便于开发环境上传完整输入输出、CI 环境仅上传元数据。
-
-虽然当前数据主要是面试题和评测数据，但仍建议保留 `CaptureContent` 开关，避免未来接入真实用户数据时重新改架构。
+- Trace 通过独立的 `COZELOOP_TRACE_ENABLED` 配置，默认关闭；启用后默认只上传脱敏元数据；
+- `CaptureContent` 默认关闭，开关不是用户授权；完整内容还必须通过第 9 节的授权检查；
+- 无论模式如何，凭据永不作为观测内容上传，错误始终脱敏。
 
 ## 5. 装配模块
 
@@ -130,8 +138,8 @@ func New(ctx context.Context, cfg config.CozeLoopConfig) (Provider, error)
 
 1. 校验启用状态和配置；
 2. 调用 `cozeloop.NewClient()`；
-3. 创建 `cozeloopcallback.NewLoopHandler(client, ...)`；
-4. 根据 `CaptureContent` 选择默认或脱敏 CallbackDataParser；
+3. 仅在 `TraceEnabled=true` 时创建 `cozeloopcallback.NewLoopHandler(client, ...)`；
+4. 仅在独立 Trace 开关开启时注册安全 Parser；逐次上报检查 `CaptureContent` 和有效授权，不直接使用可能泄露内容的默认 Parser；
 5. 返回 Handler 和关闭函数；
 6. 不创建 Eino ChatModel，不持有业务 Service，不读取 SQLite。
 
@@ -139,7 +147,7 @@ func New(ctx context.Context, cfg config.CozeLoopConfig) (Provider, error)
 
 ### 6.1 推荐：进程级注册一次
 
-官方扩展的标准接入方式是：
+以下仅展示官方扩展的注册机制；实际装配必须先检查独立 Trace 开关，使用安全 Parser 和逐次授权检查，不能无条件注册默认 Handler：
 
 ```go
 client, err := cozeloop.NewClient()
@@ -242,47 +250,29 @@ total_tokens
 - ID 可以记录，便于本地日志和 CozeLoop Trace 互相定位；
 - 不把 API Key、Authorization、完整数据库路径放入 baggage 或 tags；
 - `conversation.id` 和 `assistant.message.id` 只用于定位，不应被当成用户身份；
-- eval 的 `case.id`、tag 和 repeat 序号应进入 Trace 元数据；
+- eval 的 `run.id`、`case.id`、`case.version`、tag 和 `repeat.index` 应进入 Trace 元数据；case identity 为 `case_id + case_version`，结果身份为 `run_id + case_id + case_version + repeat_index`；每次新运行生成新 `run_id`，同一结果重传复用原身份，commit/model/prompt 仅作元数据；
 - 不把用户问题拼进 Trace 名称，避免名称不可聚合。
 
 ## 9. 输入输出内容策略
 
-### 开发环境
+### 所有环境的默认值
 
-当前数据为题库和评测数据，可以开启：
+开发、本地评测、CI 和真实用户环境均默认不上传完整 Trace；脱敏 Trace 由独立的
+`COZELOOP_TRACE_ENABLED` 开关启用，只保留节点/Tool 名、Token、延迟、错误分类和脱敏 ID，不包含内容摘要。
 
-```text
-COZELOOP_CAPTURE_CONTENT=true
-```
+### 完整内容授权
 
-用于查看：
+用户明确授权后，允许上传真实完整学习内容，不限于 fixture；内容可包括授权范围内的
+Prompt、模型输出、Tool 参数与结果、上下文和摘要输入输出。必须同时启用 Trace、
+`COZELOOP_CAPTURE_CONTENT=true` 并通过有效授权校验；配置开关本身不构成授权。
 
-- 实际 Prompt；
-- 模型输出；
-- Tool 调用参数和结果；
-- 上下文裁剪结果；
-- 摘要输入和输出。
+授权须明确目的、接收平台（含工作空间）及内容范围；本地记录授权时间、范围和告知版本。
+接收平台或内容范围变化须重新授权。用户撤销后停止后续完整上报（包括尚未发送的队列内容）；
+已上传内容不会自动删除，须在授权告知中说明。无授权或超出范围时只允许独立启用的脱敏 Trace。
 
-### CI / 评测环境
-
-建议默认保留内容，因为评测诊断需要完整输入输出；但应通过独立环境变量显式开启。评测报告仍然继续写本地 JSON/Markdown，CozeLoop 只是额外的 Trace。
-
-### 未来真实用户环境
-
-切换为：
-
-```text
-COZELOOP_CAPTURE_CONTENT=false
-```
-
-仅保留：
-
-- 节点名；
-- Tool 名；
-- Token；
-- 延迟；
-- 错误分类；
-- 脱敏 ID。
+凭据（API Key、Authorization、Cookie 等）永不作为内容上传；错误在所有模式下始终脱敏。
+本规则同时适用于 SDK Prompt Trace、Candidate/Judge Trace 和评测内容同步，不能由其他出口绕过。
+评测报告继续写本地 JSON/Markdown，CozeLoop 只是额外的 Trace。
 
 不要依赖 CozeLoop 作为唯一业务审计记录。
 
@@ -298,8 +288,8 @@ type DataParser struct {
 
 Parser 负责：
 
-- 在 `CaptureContent=true` 时保留评测和开发所需输入输出；
-- 在 `false` 时只保留摘要、长度、Token 和错误分类；
+- 仅在 `CaptureContent=true` 且有效授权覆盖当前内容时保留输入输出；撤销后停止后续完整上报；
+- 其余情况只保留允许的脱敏元数据、长度、Token 和错误分类，不保留内容摘要；
 - 对 Tool 参数和结果按配置截断；
 - 删除 API Key、Authorization、Cookie、文件路径等字段；
 - 不记录内部错误堆栈中的请求头和 URL 查询参数。
@@ -326,7 +316,10 @@ CozeLoop/Eino Callback 可以读取 Eino ChatModel 的 `ResponseMeta.Usage`，�
 
 ```text
 ContextManager + TokenEstimator
-    -> 调用前预估和裁剪
+    -> 跨轮上下文准备、初始预算与会话摘要
+
+运行层上下文策略 + 最终输入预算检查
+    -> 每次模型调用前控制工具循环增长；包含所有临时注入与工具 schema
 
 CozeLoop Callback + ResponseMeta.Usage
     -> 调用后实际统计和追踪
@@ -335,6 +328,26 @@ CozeLoop Callback + ResponseMeta.Usage
 在 Tool Loop 中，每次 `chat_model` Step 都有独立 Usage，需要由 CozeLoop 按 Step 记录，并在 Agent Run 层聚合。
 
 当前已有 `graph_events.go` 处理流式输出。实施时不要在 Executor 主循环中手工从文本 chunk 计算 Token；优先让 CozeLoop Callback 消费 Eino 的 CallbackOutput。若流式 Usage 只出现在最后一个没有文本的 chunk，Parser 必须保留该 chunk 的 Usage，不能因为 Message 为空而丢弃。
+
+### 11.1 上下文工程观测契约（待实现）
+
+除 Usage 外，补充以下本地指标，并可通过安全 Parser 映射到 CozeLoop；字段名与平台映射需实施验证：
+
+| 指标 | 含义 |
+| --- | --- |
+| `context.estimated_input_tokens` | 完整模型输入的调用前估算 |
+| `context.input_budget_tokens` | 扣除输出预留与安全余量后的输入上限 |
+| `context.before_tokens` / `context.after_tokens` | 本次缩减前后估算 |
+| `context.reduction_kind` | 工具截断、清理或历史摘要等有限枚举 |
+| `context.reduction_duration_ms` | 缩减耗时 |
+| `context.summary_status` | 复用、更新、失效、失败或降级 |
+| `context.artifact_bytes` | 临时工具结果存储量 |
+| `context.artifact_expired_reads` | 临时结果过期后的读回次数 |
+| `context.budget_rejections` | 最终输入无法满足预算的拒绝次数 |
+
+所有指标只包含允许的元数据，不包含摘要正文、工具内容、主机路径或凭据。会话/Run ID 作为脱敏 Trace 关联字段，不作为高基数指标标签。摘要模型的 Usage 单独标识，避免与回答模型的用量混淆。
+
+测试应验证每个工具循环 Step 都可观测预算检查，压缩前后指标口径一致，Trace 关闭时本地预算保护仍工作。CozeLoop 上报失败不触发额外压缩、改变摘要水位或放宽输入上限。
 
 ## 12. Server 接入流程
 
@@ -348,7 +361,9 @@ if err != nil {
     fail startup
 }
 if observability != nil {
-    callbacks.AppendGlobalHandlers(observability.Handler())
+    if cfg.CozeLoop.TraceEnabled {
+        callbacks.AppendGlobalHandlers(observability.Handler())
+    }
     defer observability.Close(shutdownCtx)
 }
 
@@ -388,7 +403,9 @@ flush CozeLoop
 
 ```text
 run.mode=eval
+run.id
 case.id
+case.version
 case.tags
 repeat.index
 candidate.model
@@ -406,11 +423,18 @@ agent.evaluation_judge
 
 ## 14. 失败策略
 
-CozeLoop 失败不能影响 Agent 主链路：
+Trace 上报失败不能影响 Agent 主链路；这不适用于固定版本 eval 的 Prompt 解析失败。
+固定版本 eval 只能使用指定版本或同 Prompt 标识、工作空间、版本的缓存，禁止本地 fallback。
+否则记为基础设施失败、不计质量分，不得剔除失败样本后宣称通过发布。
+报告须记录 requested/resolved（含标识、工作空间、版本）、source、fallback、content hash、
+有效/无效计数和发布资格；解析失败时 resolved/hash 可为空并说明原因。在线聊天可回退。
+平台 API 对这些元数据与结果身份的映射尚待实现验证，不能视为已核实。
+
+Trace 失败行为：
 
 | 场景 | 行为 |
 |---|---|
-| CozeLoop 未配置 | 正常启动，不注册 Callback |
+| CozeLoop 未配置或 Trace 独立开关关闭 | 正常运行，不注册 Trace Callback（其他启用功能仍校验各自配置） |
 | CozeLoop 初始化失败 | 启用开关时启动失败；关闭时忽略 |
 | Trace 上报失败 | 记录本地 warning，不影响模型调用 |
 | CozeLoop 网络超时 | Callback 内部异步/超时处理，不能阻塞 Agent 主链路 |
@@ -442,13 +466,15 @@ CozeLoop 失败不能影响 Agent 主链路：
 - 启用但缺 Workspace ID 时返回配置错误；
 - 启用但缺 API Token 时返回配置错误；
 - API Token 不出现在错误字符串和日志中；
-- `CaptureContent` 正确解析。
+- Trace 独立开关和 `CaptureContent` 正确解析，默认均关闭，开关不代替授权。
 
 ### Adapter 单元测试
 
 - `New` 在 disabled 状态不创建远程 client；
 - `New` 正确创建 Handler；
-- 自定义 Parser 在 content 开关下输出不同字段；
+- 自定义 Parser 覆盖无授权、有效授权的真实学习内容、超范围、撤销及接收平台变更重授权；
+- 本地授权记录包含时间、范围和告知版本，告知已上传内容不会自动删除；
+- 凭据在完整模式下仍被移除，错误始终脱敏，SDK Prompt Trace 无旁路泄露；
 - 脱敏逻辑删除 API Key、Authorization 和路径信息；
 - Close 可重复调用；
 - Close 错误不会 panic。
@@ -466,7 +492,8 @@ CozeLoop 失败不能影响 Agent 主链路：
 - `--mode validate` 不初始化 CozeLoop；
 - live 模式只初始化一次；
 - repeat 多次运行不会重复注册全局 Handler；
-- case ID/tag 能出现在 Trace 元数据；
+- run ID、case ID/version、tag、repeat index 能出现在 Trace 元数据；新运行身份不同，重传身份不变；
+- 固定版本 eval 验证精确缓存命中和无缓存时基础设施失败，无本地 fallback；报告保留无效样本及发布不合格结论；
 - CozeLoop 不可用时本地 report 仍正常写入。
 
 ## 17. 实施顺序
@@ -474,9 +501,9 @@ CozeLoop 失败不能影响 Agent 主链路：
 1. 锁定 `eino-ext/callbacks/cozeloop` 和 `cozeloop-go` 版本。
 2. 扩展 `config.Config` 和环境变量解析。
 3. 创建 `internal/infrastructure/observability/cozeloop` Adapter。
-4. 先用默认 Parser 接入 server，验证 Graph/Tool/Model Trace。
-5. 增加自定义 Parser 和 `CaptureContent` 开关。
-6. 把 eval CLI 接入同一 Adapter，并增加 case 元数据。
+4. 先实现安全 Parser、独立脱敏 Trace 开关及完整内容授权校验，再接入 server。
+5. 实现授权记录、撤销/重授权与所有上报出口的凭据过滤、错误脱敏，并验证 Graph/Tool/Model Trace。
+6. 把 eval CLI 接入同一 Adapter，增加 run/case/version/repeat 元数据、严格版本解析与报告；核实平台 API 映射（待实现验证）。
 7. 补充 CozeLoop client Close/flush 生命周期。
 8. 运行本地 Agent、smoke eval 和 repeat eval，检查：
    - Trace 是否按 Run/Step/Tool 分层；
@@ -518,15 +545,16 @@ CI 行为：
 建议接入，但采用以下默认策略：
 
 ```text
-开发环境：启用 + 允许完整内容
-本地评测：启用 + 允许完整内容
+开发环境：默认关闭 Trace；可独立启用脱敏 Trace
+本地评测：默认关闭 Trace；可独立启用脱敏 Trace
 普通单测：关闭
 CI validate：关闭
 受信任 smoke：可选启用
-未来真实用户环境：启用但只上传脱敏元数据
+真实用户环境：默认关闭 Trace；可独立启用脱敏 Trace
+所有环境完整内容：开关开启且用户明确授权，允许授权范围内真实学习内容
 ```
 
-第一阶段只做“观察已有 Eino Graph”，不把 CozeLoop 接入 ContextManager 或评测 Scorer。等调用链稳定后，再使用 Trace 数据校准：
+CozeLoop 集成第一阶段只观察现有运行链路，不让 CozeLoop 参与 ContextManager 或评测 Scorer 的决策。上下文预算和压缩可按专项方案独立推进，不以 Trace 上线为前置条件。调用链稳定后，可使用 Trace 数据校准：
 
 - 上下文 Token 预算；
 - 工具调用耗时；

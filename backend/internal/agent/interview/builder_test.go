@@ -8,7 +8,9 @@ import (
 	"sync"
 	"testing"
 
+	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	chat "interview-memory-agent/backend/internal/application/chat"
+	"interview-memory-agent/backend/internal/domain/conversation"
 
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/components/model"
@@ -22,6 +24,99 @@ func TestNewBuilderRequiresModel(t *testing.T) {
 	builder, err := NewBuilder(nil)
 	if err == nil {
 		t.Fatalf("expected validation error, got builder=%v", builder)
+	}
+}
+
+func TestNewBuilderWithPromptProviderRequiresProvider(t *testing.T) {
+	_, err := NewBuilderWithPromptProvider(&scriptedToolCallingModel{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "prompt provider is required") {
+		t.Fatalf("NewBuilderWithPromptProvider() error = %v, want provider validation error", err)
+	}
+}
+
+func TestBuilderUsesInjectedPromptProvider(t *testing.T) {
+	chatModel := &scriptedToolCallingModel{plainTextOnly: true}
+	called := false
+	provider := agentprompt.ProviderFunc(func(_ context.Context, request agentprompt.Request) (agentprompt.ResolvedPrompt, error) {
+		called = true
+		if request.Key != agentprompt.AgentPromptKey {
+			t.Fatalf("prompt key = %q, want %q", request.Key, agentprompt.AgentPromptKey)
+		}
+		return agentprompt.ResolvedPrompt{
+			Key:    request.Key,
+			Source: agentprompt.SourceLocal,
+			Templates: []schema.MessagesTemplate{
+				schema.SystemMessage("custom system instruction"),
+				schema.UserMessage("{{.query}}"),
+			},
+		}, nil
+	})
+	builder, err := NewBuilderWithPromptProvider(chatModel, provider)
+	if err != nil {
+		t.Fatalf("NewBuilderWithPromptProvider() error = %v", err)
+	}
+	runtime, err := builder.Build(context.Background(), chat.BuildInput{})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if _, err := readRuntimeStream(runtime, GraphInput{Query: "custom query"}); err != nil {
+		t.Fatalf("runtime stream error = %v", err)
+	}
+	if !called {
+		t.Fatal("prompt provider was not called")
+	}
+	if len(chatModel.inputs) != 1 || len(chatModel.inputs[0]) != 2 {
+		t.Fatalf("model input = %#v, want two custom prompt messages", chatModel.inputs)
+	}
+	if chatModel.inputs[0][0].Content != "custom system instruction" || chatModel.inputs[0][1].Content != "custom query" {
+		t.Fatalf("model prompt = %#v, want injected prompt", chatModel.inputs[0])
+	}
+}
+
+func TestBuilderPassesPromptVariablesAndMetadata(t *testing.T) {
+	chatModel := &scriptedToolCallingModel{plainTextOnly: true}
+	var request agentprompt.Request
+	provider := agentprompt.ProviderFunc(func(_ context.Context, got agentprompt.Request) (agentprompt.ResolvedPrompt, error) {
+		request = got
+		return agentprompt.ResolvedPrompt{
+			Key:     got.Key,
+			Version: "2",
+			Label:   "production",
+			Source:  agentprompt.SourceCozeLoop,
+			Templates: []schema.MessagesTemplate{
+				schema.SystemMessage("remote system"),
+				schema.UserMessage("remote question"),
+			},
+		}, nil
+	})
+	builder, err := NewBuilderWithPromptProvider(chatModel, provider)
+	if err != nil {
+		t.Fatalf("NewBuilderWithPromptProvider() error = %v", err)
+	}
+	runtime, err := builder.Build(context.Background(), chat.BuildInput{
+		History: []conversation.Message{
+			{Role: conversation.MessageRoleUser, Content: "previous question"},
+			{Role: conversation.MessageRoleAssistant, Content: "previous answer"},
+		},
+		UserMessage:         conversation.Message{Content: "current question"},
+		InterviewContext:    "interview material",
+		ConversationSummary: "conversation summary",
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	history, ok := request.Variables["history"].([]*schema.Message)
+	if !ok || len(history) != 2 || history[0].Role != schema.User || history[1].Role != schema.Assistant {
+		t.Fatalf("prompt history = %#v", request.Variables["history"])
+	}
+	if request.Variables["query"] != "current question" || request.Variables["interview_context"] != "interview material" || request.Variables["conversation_summary"] != "conversation summary" {
+		t.Fatalf("prompt variables = %#v", request.Variables)
+	}
+	if _, err := readRuntimeStream(runtime, GraphInput{Query: "current question"}); err != nil {
+		t.Fatalf("runtime stream error = %v", err)
+	}
+	if len(chatModel.inputs) != 1 || chatModel.inputs[0][0].Extra["prompt_version"] != "2" || chatModel.inputs[0][0].Extra["prompt_provider"] != string(agentprompt.SourceCozeLoop) || chatModel.inputs[0][0].Extra["prompt_fallback"] != false {
+		t.Fatalf("prompt metadata = %#v", chatModel.inputs)
 	}
 }
 

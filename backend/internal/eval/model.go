@@ -130,12 +130,20 @@ type ReportSummary struct {
 	Min      float64 `json:"min"`
 }
 
+type PromptSelection struct {
+	Key     string `json:"key,omitempty"`
+	Version string `json:"version,omitempty"`
+	Label   string `json:"label,omitempty"`
+	Source  string `json:"source,omitempty"`
+}
+
 type RunReport struct {
-	Version     int           `json:"version"`
-	Mode        string        `json:"mode"`
-	GeneratedAt time.Time     `json:"generatedAt"`
-	Summary     ReportSummary `json:"summary"`
-	Cases       []CaseResult  `json:"cases"`
+	Version     int              `json:"version"`
+	Mode        string           `json:"mode"`
+	GeneratedAt time.Time        `json:"generatedAt"`
+	Prompt      *PromptSelection `json:"prompt,omitempty"`
+	Summary     ReportSummary    `json:"summary"`
+	Cases       []CaseResult     `json:"cases"`
 }
 
 func (c EvalCase) Validate() error {

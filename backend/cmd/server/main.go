@@ -13,6 +13,7 @@ import (
 	agentcontext "interview-memory-agent/backend/internal/agent/context"
 	"interview-memory-agent/backend/internal/agent/eino"
 	"interview-memory-agent/backend/internal/agent/interview"
+	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/answer"
 	"interview-memory-agent/backend/internal/domain/conversation"
@@ -64,6 +65,12 @@ func main() {
 		os.Exit(1)
 	}
 	defer closeCozeLoop(cozeLoopClient)
+	promptProvider, err := configurePromptProvider(cozeLoopClient, cfg.CozeLoop)
+	if err != nil {
+		slog.Error("configure prompt provider", "error", err)
+		closeCozeLoop(cozeLoopClient)
+		os.Exit(1)
+	}
 	questionRepository := sqlite.NewQuestionRepository(db)
 	answerRepository := sqlite.NewAnswerRepository(db)
 	reviewRepository := sqlite.NewReviewRepository(db)
@@ -83,7 +90,7 @@ func main() {
 	chatExecutor, err := newChatExecutor(context.Background(), cfg, interview.ToolDependencies{
 		QuestionSearcher:      questionService,
 		QuestionContextReader: questionService,
-	})
+	}, promptProvider)
 	if err != nil {
 		slog.Error("configure chat executor", "error", err)
 		closeCozeLoop(cozeLoopClient)
@@ -131,7 +138,7 @@ func closeCozeLoop(client *cozeloopinfra.Client) {
 
 // newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
 // 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
-func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies) (chat.Executor, error) {
+func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
 	if err := cfg.ValidateForChat(); err != nil {
 		return nil, fmt.Errorf("validate chat configuration: %w", err)
 	}
@@ -143,7 +150,11 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 	if err != nil {
 		return nil, fmt.Errorf("create interview tools: %w", err)
 	}
-	runtimeBuilder, err := interview.NewBuilder(chatModel, tools...)
+	promptProvider := agentprompt.Provider(agentprompt.NewLocalPromptProvider())
+	if len(promptProviders) > 0 && promptProviders[0] != nil {
+		promptProvider = promptProviders[0]
+	}
+	runtimeBuilder, err := interview.NewBuilderWithPromptProvider(chatModel, promptProvider, tools...)
 	if err != nil {
 		return nil, fmt.Errorf("create interview runtime builder: %w", err)
 	}
@@ -156,6 +167,14 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 		return nil, fmt.Errorf("create chat executor: %w", err)
 	}
 	return chatExecutor, nil
+}
+
+func configurePromptProvider(client *cozeloopinfra.Client, cfg config.CozeLoopConfig) (agentprompt.Provider, error) {
+	fallback := agentprompt.NewLocalPromptProvider()
+	if !cfg.PromptEnabled {
+		return fallback, nil
+	}
+	return cozeloopinfra.NewPromptProvider(client, fallback)
 }
 
 func healthHandler(db *storage.DB) http.Handler {

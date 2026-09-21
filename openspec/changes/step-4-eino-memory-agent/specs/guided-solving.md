@@ -2,6 +2,21 @@
 
 ## Requirements
 
+### Requirement: Single-instance restart recovery
+系统 MUST 使用独占的本机单进程数据目录；目录已被其他实例占用时 MUST 拒绝第二实例启动。服务重新启动并在接受请求前，必须原子收敛遗留 `streaming` Run/assistant message 为 `failed`，错误码为 `generation_interrupted`，并保留已经持久化的可见文本。系统 MUST 不以 Hub 缺失单独判断执行失效，不实现 checkpoint；相同 client id 重试复用既有结果，新 client id 才创建新的 Run。
+
+#### Scenario: Restart during generation
+- **WHEN** 服务在生成中重启
+- **THEN** 新实例取得目录独占后，在接受请求前把遗留生成标记为 `failed/generation_interrupted`，保留已有文本且不伪造完成状态
+
+#### Scenario: Second instance rejected
+- **WHEN** 本机数据目录已由运行中的实例独占
+- **THEN** 第二实例启动失败并拒绝接受请求
+
+#### Scenario: Retry identity
+- **WHEN** 客户端以相同 client id 重试或以新 client id 重提
+- **THEN** 相同 id 返回既有结果且不重复执行，新 id 创建新的 Run；系统不从 checkpoint 继续
+
 ### Requirement: Run bounded tool calling
 Agent MUST 支持模型、工具和模型之间的 Tool Calling 循环，并限制单次请求的工具循环次数。
 
@@ -35,6 +50,17 @@ Agent MUST 将一次 Run 中每次模型调用表示为独立、有序的 Step�
 - **WHEN** 浏览器在 Run 仍活跃时重新订阅
 - **THEN** 系统 MUST 恢复已持久化或已广播的可见文本及脱敏 Step 摘要
 - **AND THEN** 系统 MUST NOT 从持久化历史重建、泄露或伪造完整工具入参和结果
+
+### Requirement: Trace and observability separation
+完整 Trace MUST 默认关闭，并与脱敏 Trace 独立配置；配置不能代替授权。可选平台上传完整真实学习内容前，系统 MUST 告知接收方、用途和内容范围，并在本地记录授权范围、时间和告知版本；撤销后停止后续完整上报，已上传内容不自动删除，接收方、用途或内容范围变化时重新授权。普通日志、诊断和 UI 摘要不属于授权 Trace，凭据永不上传，原始错误脱敏。
+
+#### Scenario: Authorized complete trace
+- **WHEN** 用户明确授权当前接收方、用途和内容范围
+- **THEN** 系统仅上传授权范围内内容，并记录授权信息；只有配置开关而无有效授权时不得上传
+
+#### Scenario: Reauthorization after change
+- **WHEN** 接收方、用途或内容范围变化
+- **THEN** 系统停止使用旧授权并要求重新授权
 
 ### Requirement: Read question memory through services
 Agent MUST 通过领域 service 提供题目、作答和复盘检索，不得直接访问 SQLite。

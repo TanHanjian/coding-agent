@@ -14,10 +14,9 @@ import (
 // once during application assembly and closed once during process shutdown.
 // When CozeLoop is disabled, Client is a no-op and does not require credentials.
 type Client struct {
-	cfg          config.CozeLoopConfig
-	sdkClient    cozeloopsdk.Client
-	closeOnce    sync.Once
-	registerOnce sync.Once
+	cfg       config.CozeLoopConfig
+	sdkClient cozeloopsdk.Client
+	closeOnce sync.Once
 }
 
 // New creates a process-level CozeLoop client from configuration.
@@ -33,10 +32,22 @@ func New(cfg config.CozeLoopConfig) (*Client, error) {
 		return client, nil
 	}
 
-	sdkClient, err := cozeloopsdk.NewClient(
+	options := []cozeloopsdk.Option{
 		cozeloopsdk.WithWorkspaceID(strings.TrimSpace(cfg.WorkspaceID)),
 		cozeloopsdk.WithAPIToken(strings.TrimSpace(cfg.APIToken)),
-	)
+	}
+	if cfg.PromptCacheSize > 0 {
+		options = append(options, cozeloopsdk.WithPromptCacheMaxCount(cfg.PromptCacheSize))
+	}
+	if cfg.PromptRefreshInterval > 0 {
+		options = append(options, cozeloopsdk.WithPromptCacheRefreshInterval(cfg.PromptRefreshInterval))
+	}
+	// PromptTrace includes formatted prompt content in the SDK's Prompt Hub
+	// spans, so only enable it when content capture is explicitly allowed.
+	if cfg.PromptEnabled && cfg.CaptureContent {
+		options = append(options, cozeloopsdk.WithPromptTrace(true))
+	}
+	sdkClient, err := cozeloopsdk.NewClient(options...)
 	if err != nil {
 		// Do not include the raw SDK error if it happens to echo credentials.
 		// Configuration errors have already been validated above, and the SDK

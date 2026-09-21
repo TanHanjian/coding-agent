@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -29,15 +30,21 @@ type OpenAIConfig struct {
 	Model   string
 }
 
-// CozeLoopConfig 包含 CozeLoop 基础 Client 的进程级配置。
+// CozeLoopConfig 包含 CozeLoop 基础 Client 和 Prompt Hub 的进程级配置。
 // APIToken 只能来自环境变量或本地 .env，不得进入日志、SQLite 或 HTTP 响应。
 type CozeLoopConfig struct {
-	Enabled        bool
-	WorkspaceID    string
-	APIToken       string
-	Environment    string
-	ServiceName    string
-	CaptureContent bool
+	Enabled               bool
+	WorkspaceID           string
+	APIToken              string
+	Environment           string
+	ServiceName           string
+	CaptureContent        bool
+	PromptEnabled         bool
+	PromptKey             string
+	PromptVersion         string
+	PromptLabel           string
+	PromptCacheSize       int
+	PromptRefreshInterval time.Duration
 }
 
 func Load() (Config, error) {
@@ -56,9 +63,21 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("parse COZELOOP_ENABLED: %w", err)
 	}
-	cozeLoopCaptureContent, err := envBool("COZELOOP_CAPTURE_CONTENT", true)
+	cozeLoopCaptureContent, err := envBool("COZELOOP_CAPTURE_CONTENT", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse COZELOOP_CAPTURE_CONTENT: %w", err)
+	}
+	cozeLoopPromptEnabled, err := envBool("COZELOOP_PROMPT_ENABLED", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_PROMPT_ENABLED: %w", err)
+	}
+	promptCacheSize, err := envInt("COZELOOP_PROMPT_CACHE_SIZE", 100)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_PROMPT_CACHE_SIZE: %w", err)
+	}
+	promptRefreshInterval, err := envDuration("COZELOOP_PROMPT_REFRESH_INTERVAL", 10*time.Minute)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_PROMPT_REFRESH_INTERVAL: %w", err)
 	}
 	dataDir, err := dataDir()
 	if err != nil {
@@ -80,12 +99,18 @@ func Load() (Config, error) {
 			Model:   os.Getenv("OPENAI_MODEL"),
 		},
 		CozeLoop: CozeLoopConfig{
-			Enabled:        cozeLoopEnabled,
-			WorkspaceID:    strings.TrimSpace(os.Getenv("COZELOOP_WORKSPACE_ID")),
-			APIToken:       strings.TrimSpace(os.Getenv("COZELOOP_API_TOKEN")),
-			Environment:    envTrimmedOr("COZELOOP_ENVIRONMENT", "local"),
-			ServiceName:    envTrimmedOr("COZELOOP_SERVICE_NAME", "interview-memory-agent"),
-			CaptureContent: cozeLoopCaptureContent,
+			Enabled:               cozeLoopEnabled,
+			WorkspaceID:           strings.TrimSpace(os.Getenv("COZELOOP_WORKSPACE_ID")),
+			APIToken:              strings.TrimSpace(os.Getenv("COZELOOP_API_TOKEN")),
+			Environment:           envTrimmedOr("COZELOOP_ENVIRONMENT", "local"),
+			ServiceName:           envTrimmedOr("COZELOOP_SERVICE_NAME", "interview-memory-agent"),
+			CaptureContent:        cozeLoopCaptureContent,
+			PromptEnabled:         cozeLoopPromptEnabled,
+			PromptKey:             envTrimmedOr("AGENT_PROMPT_KEY", "interview-review-agent"),
+			PromptVersion:         strings.TrimSpace(os.Getenv("AGENT_PROMPT_VERSION")),
+			PromptLabel:           envTrimmedOr("AGENT_PROMPT_LABEL", "development"),
+			PromptCacheSize:       promptCacheSize,
+			PromptRefreshInterval: promptRefreshInterval,
 		},
 	}, nil
 }
@@ -99,6 +124,20 @@ func (c Config) ValidateForCozeLoop() error {
 // Validate 校验启用 CozeLoop Client 所需的最小配置。错误只包含配置字段名，
 // 不包含 APIToken 的值。
 func (c CozeLoopConfig) Validate() error {
+	if c.PromptEnabled && !c.Enabled {
+		return errors.New("COZELOOP_PROMPT_ENABLED requires COZELOOP_ENABLED")
+	}
+	if c.PromptEnabled {
+		if strings.TrimSpace(c.PromptKey) == "" {
+			return errors.New("AGENT_PROMPT_KEY is required when CozeLoop Prompt Hub is enabled")
+		}
+		if c.PromptCacheSize < 1 {
+			return errors.New("COZELOOP_PROMPT_CACHE_SIZE must be greater than zero")
+		}
+		if c.PromptRefreshInterval <= 0 {
+			return errors.New("COZELOOP_PROMPT_REFRESH_INTERVAL must be greater than zero")
+		}
+	}
 	if !c.Enabled {
 		return nil
 	}
@@ -149,6 +188,30 @@ func envBool(key string, fallback bool) (bool, error) {
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		return false, fmt.Errorf("%s must be a boolean: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func envInt(key string, fallback int) (int, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be an integer: %w", key, err)
+	}
+	return parsed, nil
+}
+
+func envDuration(key string, fallback time.Duration) (time.Duration, error) {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("%s must be a duration: %w", key, err)
 	}
 	return parsed, nil
 }

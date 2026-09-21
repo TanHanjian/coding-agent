@@ -32,9 +32,22 @@ func TestRegisterEinoTracingOnlyOnce(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 	defer client.Close(context.Background())
+	secondClient, err := New(config.CozeLoopConfig{
+		Enabled:        true,
+		WorkspaceID:    "step2-test-workspace-second-" + strings.ReplaceAll(t.Name(), "/", "-"),
+		APIToken:       "step2-test-token-second",
+		CaptureContent: false,
+	})
+	if err != nil {
+		t.Fatalf("second New() error = %v", err)
+	}
+	defer secondClient.Close(context.Background())
 
 	if err := client.RegisterEinoTracing(); err != nil {
 		t.Fatalf("first RegisterEinoTracing() error = %v", err)
+	}
+	if err := secondClient.RegisterEinoTracing(); err != nil {
+		t.Fatalf("second client RegisterEinoTracing() error = %v", err)
 	}
 	if err := client.RegisterEinoTracing(); err != nil {
 		t.Fatalf("second RegisterEinoTracing() error = %v", err)
@@ -105,6 +118,45 @@ func TestMetadataOnlyParserRemovesContentButKeepsModelMetadata(t *testing.T) {
 	}
 	if got := outputTags["tokens"]; got != 8 {
 		t.Fatalf("tokens = %v, want 8", got)
+	}
+}
+
+func TestMetadataOnlyParserSanitizesErrorText(t *testing.T) {
+	filtered := filterTraceMetadata(map[string]any{
+		"error":                  "request failed with private prompt and secret-token",
+		"model_name":             "model-name",
+		"prompt_fallback":        true,
+		"prompt_fallback_reason": "get_prompt",
+		"input":                  "private prompt",
+		"extra":                  "private metadata",
+	})
+	if filtered["error"] != "error" {
+		t.Fatalf("sanitized error = %v, want generic error marker", filtered["error"])
+	}
+	if filtered["model_name"] != "model-name" {
+		t.Fatalf("model_name = %v, want model-name", filtered["model_name"])
+	}
+	if filtered["prompt_fallback"] != true || filtered["prompt_fallback_reason"] != "get_prompt" {
+		t.Fatalf("fallback metadata = %#v", filtered)
+	}
+	if _, ok := filtered["input"]; ok {
+		t.Fatal("filtered metadata retained input content")
+	}
+	if _, ok := filtered["extra"]; ok {
+		t.Fatal("filtered metadata retained extra content")
+	}
+}
+
+func TestConfiguredTraceDataParserAddsServiceMetadata(t *testing.T) {
+	parser := newConfiguredTraceDataParser(config.CozeLoopConfig{
+		Environment:    "test",
+		ServiceName:    "interview-test",
+		CaptureContent: false,
+	})
+	info := &callbacks.RunInfo{Component: components.ComponentOfChatModel, Type: "test-model"}
+	tags := parser.ParseInput(context.Background(), info, &model.CallbackInput{Config: &model.Config{Model: "model-name"}})
+	if tags["service.environment"] != "test" || tags["service.name"] != "interview-test" {
+		t.Fatalf("service metadata = %#v", tags)
 	}
 }
 

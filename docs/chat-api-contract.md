@@ -10,7 +10,7 @@
 - 前端使用 AI SDK UI Message Data Stream 协议，而不是 plain text stream。该协议可承载后续的引用、Tool 状态与完成事件。
 - `POST /api/v1/chat` 是唯一触发模型执行的入口。已有 Message CRUD 仅用于历史管理，不得由前端用来伪造助手终态消息。
 - 同一个 Conversation 同时最多只能有一条 `streaming` 的助手 Message；新的聊天请求必须收到冲突错误，不能并行写入同一会话。
-- 首版支持同一进程内通过 `GET /api/v1/chat/{assistantMessageId}/stream` 重新订阅；服务端用 snapshot + delta 补齐当前可见文本。服务重启后不能继续同一上游请求，前端读取最后持久化内容并提供重新生成。
+- 首版支持同一进程内通过 `GET /api/v1/chat/{assistantMessageId}/stream` 重新订阅；服务端用 snapshot + delta 补齐当前可见文本。服务重启后不能继续同一上游请求，启动时先按 §3.3 收敛遗留生成，前端读取最后持久化内容并允许使用新幂等键重新提问。
 
 ## 2. 会话与历史接口
 
@@ -89,8 +89,21 @@ X-Assistant-Message-ID: m_02...
 - 浏览器的 `POST /api/v1/chat` 与 `GET /api/v1/chat/{assistantMessageId}/stream` 都只是订阅者；刷新页面只能断开旧 SSE，不能取消 Eino 或上游模型流。
 - Chat Service 必须从服务级 `RunContextFactory` 创建生成上下文，不能把 HTTP 的 `request.Context()` 传给 `Executor.Stream`。显式取消、超时和服务关闭才是运行取消来源。
 - 首版恢复使用 `snapshot + delta`：Hub 在同一把锁内注册订阅者并复制当前完整文本；HTTP 先发送 snapshot（前端替换全文），再发送后续 delta（前端追加），不需要 `afterSequence` 或事件回放。
-- `messages.content` 仍批量持久化为刷新后加载历史的最后检查点。进程内 Hub 不得因慢 SSE 客户端阻塞 Eino；服务重启后无法继续同一上游模型请求，前端显示最后检查点并提供重新生成。
+- `messages.content` 仍批量持久化为刷新后加载历史的最后检查点。进程内 Hub 不得因慢 SSE 客户端阻塞 Eino；服务重启后无法继续同一上游模型请求，前端显示最后检查点和中断终态，允许使用新幂等键重新提问。
 - 现有 `generation_events` 迁移为未来的跨进程精确回放预留，首版不写入也不读取它。
+
+## 3.3 服务重启后的中断恢复（待实施）
+
+首版本机数据目录 MUST 由一个服务进程独占。启动顺序为：取得操作系统管理的进程生命周期独占锁、完成数据库迁移、在事务内收敛全部遗留助手 `streaming` 消息、提交成功后才开始接受聊天请求。独占锁 MUST 持有到服务停止，不能仅依赖可能残留的 PID 文件；第二实例无法取得锁时 MUST 拒绝启动，不得清理第一实例的生成。多进程共享数据库不在本版支持范围内。
+
+恢复事务将遗留消息更新为 `failed`，设置 `error_code=generation_interrupted` 和受控提示“上次生成因服务中断而结束，请重新提问”，保留已提交的 `content`、消息身份、顺序和原幂等键。已完成、已失败或已取消消息保持不变；恢复重复执行必须幂等。恢复失败时不开放聊天入口，不得以仍含孤立 `streaming` 的状态宣告就绪。
+
+不能仅凭一次 Hub 查询未命中就判定生成失效：注册窗口和完成竞争也可能使内存查询暂时没有结果。本规则只处理取得独占权后、接收请求前确认属于上一进程的遗留状态，不恢复模型执行或补回尚未持久化的 delta。
+
+- 使用旧 `message.id` 重试：返回原消息对及 `failed` 状态，不重新调用模型。
+- 用户选择“重新提问”：以新 `message.id` 通过现有 `POST /api/v1/chat` 创建新的消息对；原失败记录保留，不复活旧消息。这不是分支替换式 regenerate。
+- 重连读取遗留消息：返回最后文本及 `failed` 快照，不保持虚假的活动订阅。
+- 取消已收敛消息：按既有终态规则返回 `409 generation_not_active`，附当前消息。
 
 ## 4. 取消生成
 
@@ -126,6 +139,7 @@ X-Assistant-Message-ID: m_02...
 | `generation_not_active` | `409` | 刷新该 Message；不显示为系统故障。 |
 | `model_unavailable` | `503` | 保留用户输入，提供重试。 |
 | `stream_failed` | 流内 error part | 保留助手已输出文本，显示失败状态。 |
+| `generation_interrupted` | 持久化 Message 错误码（历史读取成功仍为 `200`） | 显示最后文本和服务中断提示，允许以新幂等键重新提问。 |
 
 前端根据持久化 Message 状态渲染：`streaming` 显示停止按钮；`cancelled` 显示“已停止生成”；`failed` 显示可重试错误；`completed` 为普通回答。取消控制器、ReadableStream 和 `ActiveGenerationRegistry` 都是运行时资源，不进入 Redux 或 SQLite。
 
@@ -143,4 +157,7 @@ X-Assistant-Message-ID: m_02...
 - [ ] 取消会停止 executor、持久化最后文本并返回相同助手 Message ID。
 - [ ] 取消与完成竞争时仅有一个终态；终态不得回到 `streaming`。
 - [ ] 浏览器重载通过 `GET .../messages` 恢复已完成、取消或失败的文本与状态。
+- [ ] 生成中强制退出进程后重启，遗留消息在接收聊天请求前变为 `failed/generation_interrupted`，保留已提交文本；重复启动恢复不改写既有终态。
+- [ ] 第二实例占用同一数据目录被拒绝；恢复事务失败时不开放聊天入口，不误清理仍存活的生成。
+- [ ] 中断后旧幂等键重试不调用模型，新幂等键可创建新一轮；订阅返回失败快照，取消返回终态冲突。
 - [ ] 流开始前使用 JSON 错误；流开始后使用 AI SDK error part，并且不泄露凭据或上游原始错误。

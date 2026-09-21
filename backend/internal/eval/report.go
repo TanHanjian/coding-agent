@@ -58,7 +58,11 @@ func WriteReport(dir string, report RunReport) error {
 
 func renderSummary(report RunReport) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "# Agent evaluation report\n\n- Mode: `%s`\n- Generated: `%s`\n- Total: %d\n- Passed: %d\n- Failed: %d\n- Scored: %d\n- Unscored: %d\n- Average: %.2f\n- Minimum: %.2f\n\n", report.Mode, report.GeneratedAt.Format(time.RFC3339), report.Summary.Total, report.Summary.Passed, report.Summary.Failed, report.Summary.Scored, report.Summary.Unscored, report.Summary.Average, report.Summary.Min)
+	fmt.Fprintf(&b, "# Agent evaluation report\n\n- Mode: `%s`\n- Generated: `%s`\n", report.Mode, report.GeneratedAt.Format(time.RFC3339))
+	if report.Prompt != nil {
+		fmt.Fprintf(&b, "- Prompt: `%s`\n- Prompt version: `%s`\n- Prompt label: `%s`\n- Prompt source: `%s`\n", report.Prompt.Key, report.Prompt.Version, report.Prompt.Label, report.Prompt.Source)
+	}
+	fmt.Fprintf(&b, "- Total: %d\n- Passed: %d\n- Failed: %d\n- Scored: %d\n- Unscored: %d\n- Average: %.2f\n- Minimum: %.2f\n\n", report.Summary.Total, report.Summary.Passed, report.Summary.Failed, report.Summary.Scored, report.Summary.Unscored, report.Summary.Average, report.Summary.Min)
 	failed := make([]CaseResult, 0)
 	for _, c := range report.Cases {
 		if c.Status != "passed" {

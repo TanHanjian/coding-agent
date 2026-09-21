@@ -12,4 +12,4 @@
 
 ## Delivery
 
-[MVP] 使用版本化 JSONL fixture、原生 Go runner、确定性 scorer 和可选独立 LLM Judge。
+[MVP] 使用版本化 JSONL fixture、原生 Go runner、确定性 scorer 和可选独立 LLM Judge。固定 Prompt 版本评测只接受指定版本或精确匹配缓存，失败时不回退本地 Prompt，报告基础设施失败且不具备发布资格；仅在线聊天允许回退并记录实际来源。评测保持本地基线，不引入第三方平台；后续平台接入仅为可选扩展。评测身份严格分离 case、run 和 execution，重传复用原 run/execution 标识，独立新评测才创建新的 run_id，repeat 使用独立执行身份。

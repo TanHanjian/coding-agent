@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"interview-memory-agent/backend/internal/agent/eino"
 	"interview-memory-agent/backend/internal/agent/interview"
+	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 )
@@ -28,8 +29,9 @@ type JudgeInput struct {
 }
 
 type Runner struct {
-	Candidate model.ToolCallingChatModel
-	Judge     Judge
+	Candidate      model.ToolCallingChatModel
+	Judge          Judge
+	PromptProvider agentprompt.Provider
 }
 
 func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Duration) CaseResult {
@@ -63,7 +65,11 @@ func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Durati
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
 	}
-	builder, err := interview.NewBuilder(r.Candidate, tools...)
+	promptProvider := r.PromptProvider
+	if promptProvider == nil {
+		promptProvider = agentprompt.NewLocalPromptProvider()
+	}
+	builder, err := interview.NewBuilderWithPromptProvider(r.Candidate, promptProvider, tools...)
 	if err != nil {
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()

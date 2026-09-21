@@ -80,9 +80,11 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 	}
 
 	rt, err := e.builder.Build(ctx, chat.BuildInput{
-		Conversation: req.Conversation,
-		History:      prepared.History,
-		UserMessage:  req.UserMessage,
+		Conversation:        req.Conversation,
+		History:             prepared.History,
+		UserMessage:         req.UserMessage,
+		InterviewContext:    prepared.InterviewContext,
+		ConversationSummary: prepared.ConversationSummary,
 	})
 	if err != nil {
 		return err

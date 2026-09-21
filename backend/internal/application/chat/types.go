@@ -28,9 +28,11 @@ type RuntimeInput struct {
 
 // BuildInput 包含 Eino Agent 可使用的已持久化上下文。
 type BuildInput struct {
-	Conversation conversation.Conversation
-	History      []conversation.Message
-	UserMessage  conversation.Message
+	Conversation        conversation.Conversation
+	History             []conversation.Message
+	UserMessage         conversation.Message
+	InterviewContext    string
+	ConversationSummary string
 }
 
 type BeginTurnInput struct {

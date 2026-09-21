@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	"interview-memory-agent/backend/internal/eval"
 	agentopenai "interview-memory-agent/backend/internal/infrastructure/agent/openai"
 	"interview-memory-agent/backend/internal/infrastructure/config"
@@ -16,20 +17,35 @@ import (
 )
 
 func main() {
-	mode := flag.String("mode", "validate", "validate or live")
+	mode := flag.String("mode", "validate", "validate, validate-playground or live")
 	dataset := flag.String("dataset", "../evals/interview-agent.v1.jsonl", "JSONL dataset path")
+	playground := flag.String("playground", "../evals/interview-agent-playground.v1.json", "Prompt Playground manifest path")
 	caseID := flag.String("case", "", "run only one case")
 	tag := flag.String("tag", "", "run cases containing this tag")
 	repeat := flag.Int("repeat", 1, "number of runs per selected case")
 	timeout := flag.Duration("timeout", 90*time.Second, "per-case timeout")
 	output := flag.String("output", "../evals/reports", "report output directory")
+	promptVersion := flag.String("prompt-version", "", "override the Prompt Hub version")
+	promptLabel := flag.String("prompt-label", "", "override the Prompt Hub label")
+	requirePromptVersion := flag.Bool("require-prompt-version", false, "require Prompt Hub to use a fixed version")
 	flag.Parse()
 
-	cases, err := eval.LoadCasesFile(*dataset)
+	allCases, err := eval.LoadCasesFile(*dataset)
 	if err != nil {
 		fatal(err)
 	}
-	cases = selectCases(cases, *caseID, *tag)
+	if *mode == "validate-playground" {
+		manifest, manifestErr := eval.LoadPromptPlaygroundFile(*playground)
+		if manifestErr != nil {
+			fatal(manifestErr)
+		}
+		if manifestErr := manifest.ValidateAgainst(allCases); manifestErr != nil {
+			fatal(manifestErr)
+		}
+		fmt.Printf("validated Prompt Playground manifest %q against %d cases\n", manifest.PromptKey, len(allCases))
+		return
+	}
+	cases := selectCases(allCases, *caseID, *tag)
 	if len(cases) == 0 {
 		fatal(errors.New("no cases matched the requested filters"))
 	}
@@ -51,6 +67,32 @@ func main() {
 	if err != nil {
 		fatal(fmt.Errorf("load evaluation config: %w", err))
 	}
+	if strings.TrimSpace(*promptVersion) != "" && strings.TrimSpace(*promptLabel) != "" {
+		fatal(errors.New("--prompt-version and --prompt-label cannot be used together"))
+	}
+	if strings.TrimSpace(*promptVersion) != "" {
+		cfg.CozeLoop.PromptVersion = strings.TrimSpace(*promptVersion)
+		cfg.CozeLoop.PromptLabel = ""
+	}
+	if strings.TrimSpace(*promptLabel) != "" {
+		cfg.CozeLoop.PromptLabel = strings.TrimSpace(*promptLabel)
+		cfg.CozeLoop.PromptVersion = ""
+	}
+	if strings.TrimSpace(cfg.CozeLoop.PromptVersion) != "" {
+		cfg.CozeLoop.PromptLabel = ""
+	}
+	if (strings.TrimSpace(*promptVersion) != "" || strings.TrimSpace(*promptLabel) != "") && !cfg.CozeLoop.PromptEnabled {
+		fatal(errors.New("Prompt version or label overrides require COZELOOP_PROMPT_ENABLED=true"))
+	}
+	if *requirePromptVersion {
+		if !cfg.CozeLoop.PromptEnabled {
+			fatal(errors.New("--require-prompt-version requires COZELOOP_PROMPT_ENABLED=true"))
+		}
+		version := strings.TrimSpace(cfg.CozeLoop.PromptVersion)
+		if version == "" || strings.EqualFold(version, "latest") {
+			fatal(errors.New("a concrete AGENT_PROMPT_VERSION or --prompt-version is required"))
+		}
+	}
 	cozeLoopClient, err := cozeloopinfra.New(cfg.CozeLoop)
 	if err != nil {
 		fatal(fmt.Errorf("configure CozeLoop: %w", err))
@@ -59,6 +101,17 @@ func main() {
 		fatalWithCozeLoop(cozeLoopClient, fmt.Errorf("register CozeLoop tracing: %w", err))
 	}
 	defer closeCozeLoop(cozeLoopClient)
+	promptProvider := agentprompt.Provider(agentprompt.NewLocalPromptProvider())
+	if cfg.CozeLoop.PromptEnabled {
+		if *requirePromptVersion {
+			promptProvider, err = cozeloopinfra.NewStrictPromptProvider(cozeLoopClient, promptProvider)
+		} else {
+			promptProvider, err = cozeloopinfra.NewPromptProvider(cozeLoopClient, promptProvider)
+		}
+		if err != nil {
+			fatalWithCozeLoop(cozeLoopClient, fmt.Errorf("configure prompt provider: %w", err))
+		}
+	}
 
 	candidate, err := agentopenai.NewChatModel(context.Background(), cfg.OpenAI)
 	if err != nil {
@@ -78,7 +131,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "warning: EVAL_JUDGE_API_KEY and EVAL_JUDGE_MODEL are not both configured; results will be unscored")
 	}
 
-	runner := &eval.Runner{Candidate: candidate, Judge: judge}
+	runner := &eval.Runner{Candidate: candidate, Judge: judge, PromptProvider: promptProvider}
 	results := make([]eval.CaseResult, 0, len(cases)*(*repeat))
 	for _, c := range cases {
 		for i := 0; i < *repeat; i++ {
@@ -86,6 +139,16 @@ func main() {
 		}
 	}
 	report := eval.BuildReport("live", results)
+	promptSource := "local"
+	if cfg.CozeLoop.PromptEnabled {
+		promptSource = "cozeloop"
+	}
+	report.Prompt = &eval.PromptSelection{
+		Key:     cfg.CozeLoop.PromptKey,
+		Version: cfg.CozeLoop.PromptVersion,
+		Label:   cfg.CozeLoop.PromptLabel,
+		Source:  promptSource,
+	}
 	if err := eval.WriteReport(*output, report); err != nil {
 		fatalWithCozeLoop(cozeLoopClient, err)
 	}

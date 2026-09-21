@@ -3,13 +3,18 @@ package cozeloop
 import (
 	"context"
 	"errors"
+	"sync"
 
 	cozeloopcallback "github.com/cloudwego/eino-ext/callbacks/cozeloop"
 	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/schema"
+	"interview-memory-agent/backend/internal/infrastructure/config"
 )
 
-var appendGlobalHandlers = callbacks.AppendGlobalHandlers
+var (
+	appendGlobalHandlers = callbacks.AppendGlobalHandlers
+	registerGlobalOnce   sync.Once
+)
 
 // RegisterEinoTracing installs the CozeLoop Eino callback once for the
 // process. Global callback registration is intentionally kept here, rather
@@ -23,10 +28,10 @@ func (c *Client) RegisterEinoTracing() error {
 		return errors.New("CozeLoop tracing: SDK client is not initialized")
 	}
 
-	c.registerOnce.Do(func() {
+	registerGlobalOnce.Do(func() {
 		handler := cozeloopcallback.NewLoopHandler(
 			c.sdkClient,
-			cozeloopcallback.WithCallbackDataParser(newTraceDataParser(c.cfg.CaptureContent)),
+			cozeloopcallback.WithCallbackDataParser(newConfiguredTraceDataParser(c.cfg)),
 		)
 		appendGlobalHandlers(handler)
 	})
@@ -43,6 +48,55 @@ func newTraceDataParser(captureContent bool) cozeloopcallback.CallbackDataParser
 		return parser
 	}
 	return metadataOnlyDataParser{delegate: parser}
+}
+
+func newConfiguredTraceDataParser(cfg config.CozeLoopConfig) cozeloopcallback.CallbackDataParser {
+	return configuredTraceDataParser{
+		delegate:    newTraceDataParser(cfg.CaptureContent),
+		environment: cfg.Environment,
+		serviceName: cfg.ServiceName,
+	}
+}
+
+type configuredTraceDataParser struct {
+	delegate    cozeloopcallback.CallbackDataParser
+	environment string
+	serviceName string
+}
+
+func (p configuredTraceDataParser) ParseInput(ctx context.Context, info *callbacks.RunInfo, input callbacks.CallbackInput) map[string]any {
+	return p.addServiceMetadata(p.delegate.ParseInput(ctx, info, input))
+}
+
+func (p configuredTraceDataParser) ParseOutput(ctx context.Context, info *callbacks.RunInfo, output callbacks.CallbackOutput) map[string]any {
+	return p.addServiceMetadata(p.delegate.ParseOutput(ctx, info, output))
+}
+
+func (p configuredTraceDataParser) ParseStreamInput(ctx context.Context, info *callbacks.RunInfo, input *schema.StreamReader[callbacks.CallbackInput]) map[string]any {
+	return p.addServiceMetadata(p.delegate.ParseStreamInput(ctx, info, input))
+}
+
+func (p configuredTraceDataParser) ParseStreamOutput(ctx context.Context, info *callbacks.RunInfo, output *schema.StreamReader[callbacks.CallbackOutput]) map[string]any {
+	return p.addServiceMetadata(p.delegate.ParseStreamOutput(ctx, info, output))
+}
+
+func (p configuredTraceDataParser) addServiceMetadata(tags map[string]any) map[string]any {
+	if tags == nil {
+		tags = make(map[string]any)
+	} else {
+		copied := make(map[string]any, len(tags)+2)
+		for key, value := range tags {
+			copied[key] = value
+		}
+		tags = copied
+	}
+	if p.environment != "" {
+		tags["service.environment"] = p.environment
+	}
+	if p.serviceName != "" {
+		tags["service.name"] = p.serviceName
+	}
+	return tags
 }
 
 type metadataOnlyDataParser struct {
@@ -90,6 +144,8 @@ var traceMetadataKeys = map[string]struct{}{
 	"prompt_key":              {},
 	"prompt_label":            {},
 	"prompt_provider":         {},
+	"prompt_fallback":         {},
+	"prompt_fallback_reason":  {},
 	"prompt_version":          {},
 	"reasoning_duration":      {},
 	"reasoning_tokens":        {},
@@ -108,9 +164,16 @@ func filterTraceMetadata(tags map[string]any) map[string]any {
 	}
 	filtered := make(map[string]any, len(tags))
 	for key, value := range tags {
-		if _, ok := traceMetadataKeys[key]; ok {
-			filtered[key] = value
+		if _, ok := traceMetadataKeys[key]; !ok {
+			continue
 		}
+		if key == "error" {
+			// Keep the fact that an error occurred without exporting arbitrary
+			// SDK/model/tool error text, which may contain user data or secrets.
+			filtered[key] = "error"
+			continue
+		}
+		filtered[key] = value
 	}
 	return filtered
 }

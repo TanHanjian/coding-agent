@@ -21,6 +21,9 @@ jobs:
       - name: Validate dataset
         working-directory: backend
         run: go run ./cmd/eval --mode validate --dataset ../evals/interview-agent.v1.jsonl
+      - name: Validate Prompt Playground manifest
+        working-directory: backend
+        run: go run ./cmd/eval --mode validate-playground --dataset ../evals/interview-agent.v1.jsonl --playground ../evals/interview-agent-playground.v1.json
 
   smoke:
     name: Live smoke evaluation (advisory)

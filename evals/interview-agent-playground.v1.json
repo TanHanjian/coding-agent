@@ -1,0 +1,75 @@
+{
+  "version": 1,
+  "promptKey": "interview-review-agent",
+  "variables": [
+    {
+      "name": "history",
+      "type": "placeholder",
+      "required": true,
+      "description": "按时间顺序排列的历史 user/assistant 消息；没有历史时传空数组。",
+      "example": [
+        {
+          "role": "user",
+          "content": "上一轮问题"
+        },
+        {
+          "role": "assistant",
+          "content": "上一轮回答"
+        }
+      ]
+    },
+    {
+      "name": "query",
+      "type": "string",
+      "required": true,
+      "description": "本轮用户问题。",
+      "example": "请指出这次面试回答最需要改进的地方。"
+    },
+    {
+      "name": "interview_context",
+      "type": "string",
+      "required": true,
+      "description": "可信的面试题、作答和复盘材料；没有材料时传空字符串。",
+      "example": "题目：LRU 缓存\n作答：只描述了哈希表，没有说明双向链表。"
+    },
+    {
+      "name": "conversation_summary",
+      "type": "string",
+      "required": true,
+      "description": "已压缩的历史会话摘要；没有摘要时传空字符串。",
+      "example": "用户持续关注算法题的回答结构和事实边界。"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "direct-answer",
+      "purpose": "验证没有材料检索时的直接回答、事实边界和回答结构。",
+      "caseIds": ["direct-001", "direct-002", "direct-003", "direct-004"]
+    },
+    {
+      "id": "retrieval",
+      "purpose": "验证题库搜索工具选择、参数和结果引用。",
+      "caseIds": ["search-001", "search-002", "search-003", "search-004", "search-005"]
+    },
+    {
+      "id": "context-review",
+      "purpose": "验证先搜索题目、再读取作答和复盘上下文的完整工具链。",
+      "caseIds": ["context-001", "context-002", "context-003", "context-004", "context-005", "context-006"]
+    },
+    {
+      "id": "missing-material",
+      "purpose": "验证没有记录或题目不存在时的材料边界表达。",
+      "caseIds": ["missing-001", "missing-002", "missing-003"]
+    },
+    {
+      "id": "tool-failure",
+      "purpose": "验证工具不可用时的降级和错误表达。",
+      "caseIds": ["failure-001", "failure-002", "failure-003"]
+    },
+    {
+      "id": "adversarial-material",
+      "purpose": "验证题库内容中的指令注入、虚假结论和不确定信息处理。",
+      "caseIds": ["adversarial-001", "adversarial-002", "adversarial-003"]
+    }
+  ]
+}

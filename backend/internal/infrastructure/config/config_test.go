@@ -1,6 +1,9 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("APP_ADDR", "127.0.0.1:9090")
@@ -16,6 +19,12 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("COZELOOP_ENVIRONMENT", " test ")
 	t.Setenv("COZELOOP_SERVICE_NAME", " service-test ")
 	t.Setenv("COZELOOP_CAPTURE_CONTENT", "false")
+	t.Setenv("COZELOOP_PROMPT_ENABLED", "false")
+	t.Setenv("AGENT_PROMPT_KEY", "")
+	t.Setenv("AGENT_PROMPT_VERSION", "")
+	t.Setenv("AGENT_PROMPT_LABEL", "")
+	t.Setenv("COZELOOP_PROMPT_CACHE_SIZE", "")
+	t.Setenv("COZELOOP_PROMPT_REFRESH_INTERVAL", "")
 	cfg, err := Load()
 	if err != nil {
 		t.Fatal(err)
@@ -34,6 +43,27 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	}
 	if cfg.CozeLoop.Environment != "test" || cfg.CozeLoop.ServiceName != "service-test" || cfg.CozeLoop.CaptureContent {
 		t.Fatalf("unexpected CozeLoop runtime config: %+v", cfg.CozeLoop)
+	}
+}
+
+func TestLoadPromptConfig(t *testing.T) {
+	t.Setenv("APP_DATA_DIR", t.TempDir())
+	t.Setenv("COZELOOP_PROMPT_ENABLED", "true")
+	t.Setenv("AGENT_PROMPT_KEY", "remote-interview")
+	t.Setenv("AGENT_PROMPT_VERSION", "7")
+	t.Setenv("AGENT_PROMPT_LABEL", "production")
+	t.Setenv("COZELOOP_PROMPT_CACHE_SIZE", "25")
+	t.Setenv("COZELOOP_PROMPT_REFRESH_INTERVAL", "2m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.CozeLoop.PromptEnabled || cfg.CozeLoop.PromptKey != "remote-interview" || cfg.CozeLoop.PromptVersion != "7" || cfg.CozeLoop.PromptLabel != "production" {
+		t.Fatalf("unexpected Prompt Hub config: %+v", cfg.CozeLoop)
+	}
+	if cfg.CozeLoop.PromptCacheSize != 25 || cfg.CozeLoop.PromptRefreshInterval != 2*time.Minute {
+		t.Fatalf("unexpected Prompt cache config: %+v", cfg.CozeLoop)
 	}
 }
 
@@ -66,6 +96,12 @@ func TestLoadCozeLoopDefaults(t *testing.T) {
 	t.Setenv("COZELOOP_ENVIRONMENT", "")
 	t.Setenv("COZELOOP_SERVICE_NAME", "")
 	t.Setenv("COZELOOP_CAPTURE_CONTENT", "")
+	t.Setenv("COZELOOP_PROMPT_ENABLED", "")
+	t.Setenv("AGENT_PROMPT_KEY", "")
+	t.Setenv("AGENT_PROMPT_VERSION", "")
+	t.Setenv("AGENT_PROMPT_LABEL", "")
+	t.Setenv("COZELOOP_PROMPT_CACHE_SIZE", "")
+	t.Setenv("COZELOOP_PROMPT_REFRESH_INTERVAL", "")
 
 	cfg, err := Load()
 	if err != nil {
@@ -80,8 +116,14 @@ func TestLoadCozeLoopDefaults(t *testing.T) {
 	if cfg.CozeLoop.ServiceName != "interview-memory-agent" {
 		t.Fatalf("ServiceName = %q, want default service name", cfg.CozeLoop.ServiceName)
 	}
-	if !cfg.CozeLoop.CaptureContent {
-		t.Fatal("CaptureContent should default to true")
+	if cfg.CozeLoop.CaptureContent {
+		t.Fatal("CaptureContent should default to false")
+	}
+	if cfg.CozeLoop.PromptEnabled || cfg.CozeLoop.PromptKey != "interview-review-agent" || cfg.CozeLoop.PromptLabel != "development" {
+		t.Fatalf("unexpected Prompt Hub defaults: %+v", cfg.CozeLoop)
+	}
+	if cfg.CozeLoop.PromptCacheSize != 100 || cfg.CozeLoop.PromptRefreshInterval != 10*time.Minute {
+		t.Fatalf("unexpected Prompt cache defaults: %+v", cfg.CozeLoop)
 	}
 }
 
@@ -95,6 +137,9 @@ func TestLoadRejectsInvalidCozeLoopBoolean(t *testing.T) {
 }
 
 func TestValidateForCozeLoop(t *testing.T) {
+	if err := (Config{CozeLoop: CozeLoopConfig{PromptEnabled: true}}).ValidateForCozeLoop(); err == nil {
+		t.Fatal("expected Prompt Hub to require enabled CozeLoop")
+	}
 	if err := (Config{}).ValidateForCozeLoop(); err != nil {
 		t.Fatalf("disabled CozeLoop should not require credentials: %v", err)
 	}
