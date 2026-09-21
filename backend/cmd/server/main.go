@@ -20,6 +20,7 @@ import (
 	"interview-memory-agent/backend/internal/domain/review"
 	agentopenai "interview-memory-agent/backend/internal/infrastructure/agent/openai"
 	"interview-memory-agent/backend/internal/infrastructure/config"
+	cozeloopinfra "interview-memory-agent/backend/internal/infrastructure/cozeloop"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
 	"interview-memory-agent/backend/internal/transport/httpanswer"
@@ -52,6 +53,17 @@ func main() {
 		slog.Error("run migrations", "error", err)
 		os.Exit(1)
 	}
+	cozeLoopClient, err := cozeloopinfra.New(cfg.CozeLoop)
+	if err != nil {
+		slog.Error("configure CozeLoop", "error", err)
+		os.Exit(1)
+	}
+	if err := cozeLoopClient.RegisterEinoTracing(); err != nil {
+		slog.Error("register CozeLoop tracing", "error", err)
+		closeCozeLoop(cozeLoopClient)
+		os.Exit(1)
+	}
+	defer closeCozeLoop(cozeLoopClient)
 	questionRepository := sqlite.NewQuestionRepository(db)
 	answerRepository := sqlite.NewAnswerRepository(db)
 	reviewRepository := sqlite.NewReviewRepository(db)
@@ -74,6 +86,7 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("configure chat executor", "error", err)
+		closeCozeLoop(cozeLoopClient)
 		os.Exit(1)
 	}
 	chatService, err := chat.NewSkeletonService(chat.Dependencies{
@@ -85,6 +98,7 @@ func main() {
 	})
 	if err != nil {
 		slog.Error("configure chat service", "error", err)
+		closeCozeLoop(cozeLoopClient)
 		os.Exit(1)
 	}
 	router := chi.NewRouter()
@@ -102,7 +116,16 @@ func main() {
 	slog.Info("starting backend", "addr", cfg.Addr)
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		slog.Error("server stopped", "error", err)
+		closeCozeLoop(cozeLoopClient)
 		os.Exit(1)
+	}
+}
+
+func closeCozeLoop(client *cozeloopinfra.Client) {
+	closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Close(closeContext); err != nil {
+		slog.Error("close CozeLoop", "error", err)
 	}
 }
 

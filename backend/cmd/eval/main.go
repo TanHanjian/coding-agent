@@ -12,6 +12,7 @@ import (
 	"interview-memory-agent/backend/internal/eval"
 	agentopenai "interview-memory-agent/backend/internal/infrastructure/agent/openai"
 	"interview-memory-agent/backend/internal/infrastructure/config"
+	cozeloopinfra "interview-memory-agent/backend/internal/infrastructure/cozeloop"
 )
 
 func main() {
@@ -50,19 +51,28 @@ func main() {
 	if err != nil {
 		fatal(fmt.Errorf("load evaluation config: %w", err))
 	}
+	cozeLoopClient, err := cozeloopinfra.New(cfg.CozeLoop)
+	if err != nil {
+		fatal(fmt.Errorf("configure CozeLoop: %w", err))
+	}
+	if err := cozeLoopClient.RegisterEinoTracing(); err != nil {
+		fatalWithCozeLoop(cozeLoopClient, fmt.Errorf("register CozeLoop tracing: %w", err))
+	}
+	defer closeCozeLoop(cozeLoopClient)
+
 	candidate, err := agentopenai.NewChatModel(context.Background(), cfg.OpenAI)
 	if err != nil {
-		fatal(fmt.Errorf("candidate model: %w", err))
+		fatalWithCozeLoop(cozeLoopClient, fmt.Errorf("candidate model: %w", err))
 	}
 	var judge eval.Judge
 	if key, modelName := strings.TrimSpace(os.Getenv("EVAL_JUDGE_API_KEY")), strings.TrimSpace(os.Getenv("EVAL_JUDGE_MODEL")); key != "" && modelName != "" {
 		judgeModel, judgeErr := agentopenai.NewChatModel(context.Background(), config.OpenAIConfig{APIKey: key, BaseURL: os.Getenv("EVAL_JUDGE_BASE_URL"), Model: modelName})
 		if judgeErr != nil {
-			fatal(fmt.Errorf("judge model: %w", judgeErr))
+			fatalWithCozeLoop(cozeLoopClient, fmt.Errorf("judge model: %w", judgeErr))
 		}
 		judge, err = eval.NewLLMJudge(judgeModel)
 		if err != nil {
-			fatal(err)
+			fatalWithCozeLoop(cozeLoopClient, err)
 		}
 	} else {
 		fmt.Fprintln(os.Stderr, "warning: EVAL_JUDGE_API_KEY and EVAL_JUDGE_MODEL are not both configured; results will be unscored")
@@ -77,7 +87,7 @@ func main() {
 	}
 	report := eval.BuildReport("live", results)
 	if err := eval.WriteReport(*output, report); err != nil {
-		fatal(err)
+		fatalWithCozeLoop(cozeLoopClient, err)
 	}
 	fmt.Printf("evaluated %d runs: passed=%d failed=%d unscored=%d average=%.2f\n", report.Summary.Total, report.Summary.Passed, report.Summary.Failed, report.Summary.Unscored, report.Summary.Average)
 }
@@ -103,4 +113,17 @@ func contains(values []string, want string) bool {
 	}
 	return false
 }
+func closeCozeLoop(client *cozeloopinfra.Client) {
+	closeContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := client.Close(closeContext); err != nil {
+		fmt.Fprintln(os.Stderr, "eval: close CozeLoop:", err)
+	}
+}
+
+func fatalWithCozeLoop(client *cozeloopinfra.Client, err error) {
+	closeCozeLoop(client)
+	fatal(err)
+}
+
 func fatal(err error) { fmt.Fprintln(os.Stderr, "eval:", err); os.Exit(1) }

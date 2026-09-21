@@ -18,6 +18,7 @@ type Config struct {
 	AgentDebug   bool
 	DatabasePath string
 	OpenAI       OpenAIConfig
+	CozeLoop     CozeLoopConfig
 }
 
 // OpenAIConfig 仅包含进程本地的模型配置。APIKey 必须来自环境变量（直接设置或由
@@ -26,6 +27,17 @@ type OpenAIConfig struct {
 	APIKey  string
 	BaseURL string
 	Model   string
+}
+
+// CozeLoopConfig 包含 CozeLoop 基础 Client 的进程级配置。
+// APIToken 只能来自环境变量或本地 .env，不得进入日志、SQLite 或 HTTP 响应。
+type CozeLoopConfig struct {
+	Enabled        bool
+	WorkspaceID    string
+	APIToken       string
+	Environment    string
+	ServiceName    string
+	CaptureContent bool
 }
 
 func Load() (Config, error) {
@@ -39,6 +51,14 @@ func Load() (Config, error) {
 	agentDebug, err := envBool("AGENT_DEBUG", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse AGENT_DEBUG: %w", err)
+	}
+	cozeLoopEnabled, err := envBool("COZELOOP_ENABLED", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_ENABLED: %w", err)
+	}
+	cozeLoopCaptureContent, err := envBool("COZELOOP_CAPTURE_CONTENT", true)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_CAPTURE_CONTENT: %w", err)
 	}
 	dataDir, err := dataDir()
 	if err != nil {
@@ -59,7 +79,40 @@ func Load() (Config, error) {
 			BaseURL: os.Getenv("OPENAI_BASE_URL"),
 			Model:   os.Getenv("OPENAI_MODEL"),
 		},
+		CozeLoop: CozeLoopConfig{
+			Enabled:        cozeLoopEnabled,
+			WorkspaceID:    strings.TrimSpace(os.Getenv("COZELOOP_WORKSPACE_ID")),
+			APIToken:       strings.TrimSpace(os.Getenv("COZELOOP_API_TOKEN")),
+			Environment:    envTrimmedOr("COZELOOP_ENVIRONMENT", "local"),
+			ServiceName:    envTrimmedOr("COZELOOP_SERVICE_NAME", "interview-memory-agent"),
+			CaptureContent: cozeLoopCaptureContent,
+		},
 	}, nil
+}
+
+// ValidateForCozeLoop 由应用组装根在启用 CozeLoop 时调用。关闭 CozeLoop 时，
+// 即使没有平台凭据也不应影响本地服务启动。
+func (c Config) ValidateForCozeLoop() error {
+	return c.CozeLoop.Validate()
+}
+
+// Validate 校验启用 CozeLoop Client 所需的最小配置。错误只包含配置字段名，
+// 不包含 APIToken 的值。
+func (c CozeLoopConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	missing := make([]string, 0, 2)
+	if strings.TrimSpace(c.WorkspaceID) == "" {
+		missing = append(missing, "COZELOOP_WORKSPACE_ID")
+	}
+	if strings.TrimSpace(c.APIToken) == "" {
+		missing = append(missing, "COZELOOP_API_TOKEN")
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("CozeLoop is enabled; required configuration is missing: %s", strings.Join(missing, ", "))
+	}
+	return nil
 }
 
 // ValidateForChat 由应用组装根在启用 Chat 运行时时调用。将它与 Load 分开，
@@ -76,6 +129,13 @@ func (c Config) ValidateForChat() error {
 
 func envOr(key, fallback string) string {
 	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return fallback
+}
+
+func envTrimmedOr(key, fallback string) string {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
 	}
 	return fallback
