@@ -10,6 +10,7 @@ import (
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
 
+	"github.com/cloudwego/eino/callbacks"
 	"github.com/cloudwego/eino/compose"
 	"github.com/cloudwego/eino/schema"
 )
@@ -20,6 +21,7 @@ type Executor struct {
 	builder           chat.RuntimeBuilder
 	contextManager    chat.ContextManager
 	graphDebugLogging bool
+	callbackHandlers  []callbacks.Handler
 }
 
 type Option func(*Executor)
@@ -29,6 +31,18 @@ type Option func(*Executor)
 func WithGraphDebugLogging(enabled bool) Option {
 	return func(executor *Executor) {
 		executor.graphDebugLogging = enabled
+	}
+}
+
+// WithCallbackHandlers adds request-scoped Eino callbacks without coupling the
+// Executor to any particular instrumentation provider.
+func WithCallbackHandlers(handlers ...callbacks.Handler) Option {
+	return func(executor *Executor) {
+		for _, handler := range handlers {
+			if handler != nil {
+				executor.callbackHandlers = append(executor.callbackHandlers, handler)
+			}
+		}
 	}
 }
 
@@ -94,7 +108,9 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		return err
 	}
 	steps := newGenerationStepTracker()
-	runtimeOptions := []compose.Option{compose.WithCallbacks(newGraphEventCallbacks(req, sink, steps)...)}
+	graphCallbacks := newGraphEventCallbacks(req, sink, steps)
+	graphCallbacks = append(graphCallbacks, e.callbackHandlers...)
+	runtimeOptions := []compose.Option{compose.WithCallbacks(graphCallbacks...)}
 	if e.graphDebugLogging {
 		runtimeOptions = append(runtimeOptions, compose.WithCallbacks(newGraphDebugCallbacks(req)...))
 	}

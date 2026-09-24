@@ -9,6 +9,7 @@ import (
 	"github.com/cloudwego/eino/schema"
 )
 
+// Local prompt provider tests.
 func TestLocalPromptProviderResolvesInterviewPrompt(t *testing.T) {
 	provider := NewLocalPromptProvider()
 	resolved, err := provider.Resolve(context.Background(), Request{Key: AgentPromptKey})
@@ -87,5 +88,41 @@ func TestLocalPromptProviderHonorsCancellation(t *testing.T) {
 	_, err := NewLocalPromptProvider().Resolve(ctx, Request{Key: AgentPromptKey})
 	if err == nil || !strings.Contains(err.Error(), "context canceled") {
 		t.Fatalf("Resolve() error = %v, want context canceled", err)
+	}
+}
+
+// Prompt hash tests.
+func TestLocalPromptContentHashFingerprintsRenderedPromptWithoutExposingContent(t *testing.T) {
+	provider := NewLocalPromptProvider()
+	resolve := func(query string) ResolvedPrompt {
+		resolved, err := provider.Resolve(context.Background(), Request{
+			Key: AgentPromptKey,
+			Variables: map[string]any{
+				"history":              []*schema.Message{schema.UserMessage("history detail")},
+				"query":                query,
+				"interview_context":    "interview detail",
+				"conversation_summary": "summary detail",
+			},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return resolved
+	}
+	first := resolve("private query alpha")
+	second := resolve("private query beta")
+	if first.ContentHash == "" || first.ContentHash == second.ContentHash {
+		t.Fatalf("content hashes should be non-empty and input-sensitive: %q, %q", first.ContentHash, second.ContentHash)
+	}
+	if !strings.HasPrefix(first.ContentHash, "sha256:") || strings.Contains(first.ContentHash, "private query") || strings.Contains(first.ContentHash, "interview detail") {
+		t.Fatalf("content hash contains raw prompt data: %q", first.ContentHash)
+	}
+}
+
+func TestHashPromptTemplatesIsStable(t *testing.T) {
+	left := HashPromptTemplates(interviewReviewTemplates())
+	right := HashPromptTemplates(interviewReviewTemplates())
+	if left == "" || left != right {
+		t.Fatalf("template hashes = %q and %q", left, right)
 	}
 }

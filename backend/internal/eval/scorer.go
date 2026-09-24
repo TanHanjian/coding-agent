@@ -9,7 +9,14 @@ import (
 // ScoreDeterministic applies the 60-point non-LLM portion of the rubric:
 // tool behavior is 40 points and answer hard assertions are 20 points.
 func ScoreDeterministic(c EvalCase, answer string, trace []ToolTrace) (ScoreBreakdown, []HardCheck) {
-	checks := make([]HardCheck, 0, 5)
+	checks := make([]HardCheck, 0, 6)
+	answerNonempty := strings.TrimSpace(answer) != ""
+	checks = append(checks, HardCheck{
+		Name:     "answer_nonempty",
+		Passed:   answerNonempty,
+		Reason:   nonemptyAnswerReason(answerNonempty),
+		Critical: !answerNonempty,
+	})
 	toolNames := make([]string, 0, len(trace))
 	for _, call := range trace {
 		toolNames = append(toolNames, call.Name)
@@ -87,6 +94,13 @@ func ScoreDeterministic(c EvalCase, answer string, trace []ToolTrace) (ScoreBrea
 	breakdown := ScoreBreakdown{ToolSelection: points(checks, "tool_selection"), ToolArguments: points(checks, "tool_arguments"), ToolSequence: points(checks, "tool_sequence"), RequiredFacts: points(checks, "required_facts"), ForbiddenContent: points(checks, "forbidden_content")}
 	breakdown.DeterministicScore = breakdown.ToolSelection + breakdown.ToolArguments + breakdown.ToolSequence + breakdown.RequiredFacts + breakdown.ForbiddenContent
 	return breakdown, checks
+}
+
+func nonemptyAnswerReason(passed bool) string {
+	if passed {
+		return "answer is non-empty"
+	}
+	return "answer is empty"
 }
 
 func ApplyJudgeScore(b ScoreBreakdown, judge JudgeResult) ScoreBreakdown {

@@ -1,0 +1,356 @@
+{
+  "version": 1,
+  "evaluators": [
+    {
+      "key": "answer-nonempty",
+      "name": "Interview Memory Agent / Code / Answer Nonempty",
+      "type": "code",
+      "version": "1.0.0",
+      "description": "检查 Agent 实际回答是否非空。",
+      "assetFile": "code/answer_nonempty.py",
+      "inputSchemas": [
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "answer-must-contain",
+      "name": "Interview Memory Agent / Code / Required Facts",
+      "type": "code",
+      "version": "1.0.0",
+      "description": "检查回答是否包含 case 声明的全部必含事实。",
+      "assetFile": "code/answer_must_contain.py",
+      "inputSchemas": [
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "required_facts",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "answer-must-not-contain",
+      "name": "Interview Memory Agent / Code / Forbidden Content",
+      "type": "code",
+      "version": "1.0.0",
+      "description": "检查回答是否未包含 case 声明的禁含内容，包括 critical forbid。",
+      "assetFile": "code/answer_must_not_contain.py",
+      "inputSchemas": [
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "forbidden_content",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "evaluation-status",
+      "name": "Interview Memory Agent / Code / Evaluation Status",
+      "type": "code",
+      "version": "1.0.0",
+      "description": "检查本地评测执行状态是否为 passed。",
+      "assetFile": "code/evaluation_status.py",
+      "inputSchemas": [
+        {
+          "key": "execution_status",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "tool-trace-structure",
+      "name": "Interview Memory Agent / Code / Tool Trace Structure",
+      "type": "code",
+      "version": "1.0.0",
+      "description": "可选：检查脱敏 Tool Trace 是否符合当前数组和字段结构。",
+      "assetFile": "code/tool_trace_structure.py",
+      "inputSchemas": [
+        {
+          "key": "tool_trace",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "answer-faithfulness",
+      "name": "Interview Memory Agent / LLM / Faithfulness",
+      "type": "prompt",
+      "version": "1.0.0",
+      "description": "独立评估回答是否忠于面试材料及参考事实。",
+      "assetFile": "prompts/answer_faithfulness.md",
+      "inputSchemas": [
+        {
+          "key": "input_query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "interview_context",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "required_facts",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 4
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "instruction-following",
+      "name": "Interview Memory Agent / LLM / Instruction Following",
+      "type": "prompt",
+      "version": "1.0.0",
+      "description": "独立评估回答是否遵守用户任务及案件约束。",
+      "assetFile": "prompts/instruction_following.md",
+      "inputSchemas": [
+        {
+          "key": "input_query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "interview_context",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "required_facts",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "forbidden_content",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "judge_rubric",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 4
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "answer-completeness",
+      "name": "Interview Memory Agent / LLM / Completeness",
+      "type": "prompt",
+      "version": "1.0.0",
+      "description": "独立评估回答对问题要求和参考事实的覆盖程度。",
+      "assetFile": "prompts/answer_completeness.md",
+      "inputSchemas": [
+        {
+          "key": "input_query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "interview_context",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "required_facts",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "judge_rubric",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 4
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "answer-actionability",
+      "name": "Interview Memory Agent / LLM / Actionability",
+      "type": "prompt",
+      "version": "1.0.0",
+      "description": "独立评估回答中的建议是否具体可行。",
+      "assetFile": "prompts/answer_actionability.md",
+      "inputSchemas": [
+        {
+          "key": "input_query",
+          "type": "string",
+          "required": true
+        },
+        {
+          "key": "interview_context",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "required_facts",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "judge_rubric",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "actual_output",
+          "type": "string",
+          "required": true
+        }
+      ],
+      "outputSchemas": [
+        {
+          "key": "score",
+          "type": "number",
+          "required": true,
+          "minimum": 0,
+          "maximum": 4
+        },
+        {
+          "key": "reason",
+          "type": "string",
+          "required": true
+        }
+      ]
+    }
+  ]
+}

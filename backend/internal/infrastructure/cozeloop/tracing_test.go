@@ -2,8 +2,10 @@ package cozeloop
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	cozeloopcallback "github.com/cloudwego/eino-ext/callbacks/cozeloop"
 	"github.com/cloudwego/eino/callbacks"
@@ -11,6 +13,7 @@ import (
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
 
+	"interview-memory-agent/backend/internal/eval"
 	"interview-memory-agent/backend/internal/infrastructure/config"
 )
 
@@ -144,6 +147,92 @@ func TestMetadataOnlyParserSanitizesErrorText(t *testing.T) {
 	}
 	if _, ok := filtered["extra"]; ok {
 		t.Fatal("filtered metadata retained extra content")
+	}
+}
+
+func TestConfiguredTraceDataParserAddsEvaluationMetadataWithoutContent(t *testing.T) {
+	parser := newConfiguredTraceDataParser(config.CozeLoopConfig{CaptureContent: false})
+	capture := eval.NewTraceCapture(eval.TraceMetadata{
+		RunID:         "run-1",
+		CaseID:        "case-1",
+		CaseVersion:   1,
+		CaseTags:      []string{"smoke", "retrieval"},
+		RepeatIndex:   2,
+		Role:          "candidate",
+		GitCommit:     "abc123",
+		Model:         "candidate-model",
+		PromptKey:     "agent-prompt",
+		PromptVersion: "v1",
+		PromptSource:  "cozeloop",
+	})
+	capture.SetPromptResolution(eval.PromptResolution{
+		Requested:   eval.PromptSelection{Key: "requested-key", Version: "v1", Source: "cozeloop"},
+		Resolved:    eval.PromptSelection{Key: "resolved-key", Version: "v1", Source: "cozeloop"},
+		ContentHash: "sha256:abc",
+	})
+	ctx := eval.WithTraceCapture(context.Background(), capture)
+	info := &callbacks.RunInfo{Component: components.ComponentOfChatModel, Type: "test-model"}
+	tags := parser.ParseInput(ctx, info, &model.CallbackInput{
+		Messages: []*schema.Message{schema.UserMessage("private prompt")},
+	})
+	if tags["run_id"] != "run-1" || tags["case_id"] != "case-1" || tags["case_version"] != 1 || tags["repeat_index"] != 2 {
+		t.Fatalf("evaluation identity metadata = %#v", tags)
+	}
+	if tags["case_tags"] != "smoke,retrieval" || tags["eval_role"] != "candidate" || tags["git_commit"] != "abc123" {
+		t.Fatalf("evaluation role/tags = %#v", tags)
+	}
+	if tags["eval_model"] != "candidate-model" || tags["eval_prompt_key"] != "agent-prompt" || tags["eval_prompt_version"] != "v1" || tags["eval_prompt_source"] != "cozeloop" {
+		t.Fatalf("evaluation model/Prompt metadata = %#v", tags)
+	}
+	if tags["prompt_resolved_key"] != "resolved-key" || tags["prompt_resolved_version"] != "v1" || tags["prompt_content_hash"] != "sha256:abc" {
+		t.Fatalf("resolved Prompt metadata = %#v", tags)
+	}
+	if _, ok := tags["input"]; ok {
+		t.Fatal("metadata-only evaluation trace contains prompt content")
+	}
+}
+
+func TestTraceCapturingHandlerCapturesIDFromWrappedHandlerContext(t *testing.T) {
+	type traceIDKey struct{}
+	delegate := callbacks.NewHandlerBuilder().OnStartFn(func(ctx context.Context, _ *callbacks.RunInfo, _ callbacks.CallbackInput) context.Context {
+		return context.WithValue(ctx, traceIDKey{}, "trace-123")
+	}).Build()
+	capture := eval.NewTraceCapture(eval.TraceMetadata{RunID: "run-1", Role: "candidate"})
+	handler := newTraceCapturingHandler(delegate, func(ctx context.Context) string {
+		traceID, _ := ctx.Value(traceIDKey{}).(string)
+		return traceID
+	})
+	handler.OnStart(eval.WithTraceCapture(context.Background(), capture), nil, nil)
+	if got := capture.Snapshot().TraceID; got != "trace-123" {
+		t.Fatalf("captured trace id = %q, want trace-123", got)
+	}
+}
+
+func TestConfiguredTraceDataParserStopsContentCaptureAfterConsentRevocation(t *testing.T) {
+	consentPath := filepath.Join(t.TempDir(), "consent.json")
+	cfg := config.CozeLoopConfig{
+		CaptureContent: true,
+		ConsentPath:    consentPath,
+		WorkspaceID:    "workspace-1",
+		APIBaseURL:     "https://api.coze.cn",
+	}
+	parser := newConfiguredTraceDataParser(cfg)
+	info := &callbacks.RunInfo{Component: components.ComponentOfChatModel, Type: "test-model"}
+	input := &model.CallbackInput{Messages: []*schema.Message{schema.UserMessage("private prompt content")}}
+	if tags := parser.ParseInput(context.Background(), info, input); tags["input"] != nil {
+		t.Fatal("content was captured before authorization")
+	}
+	if err := GrantContentConsent(consentPath, cfg.WorkspaceID, cfg.APIBaseURL, []string{ConsentScopeTraceContent}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if tags := parser.ParseInput(context.Background(), info, input); tags["input"] == nil {
+		t.Fatal("authorized content capture did not include callback input")
+	}
+	if err := RevokeContentConsent(consentPath, "", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if tags := parser.ParseInput(context.Background(), info, input); tags["input"] != nil {
+		t.Fatal("content capture continued after consent revocation")
 	}
 }
 

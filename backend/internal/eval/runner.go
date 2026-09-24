@@ -35,17 +35,50 @@ type Runner struct {
 }
 
 func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Duration) CaseResult {
+	runID, err := NewRunID()
+	if err != nil {
+		return CaseResult{CaseID: c.ID, CaseVersion: c.Version, RepeatIndex: 1, Tags: append([]string(nil), c.Tags...), Status: "error", InfrastructureFailure: true, Error: "run_id_generation_error"}
+	}
+	return r.RunCaseWithMetadata(parent, c, timeout, RunMetadata{
+		RunID:       runID,
+		CaseID:      c.ID,
+		CaseVersion: c.Version,
+		CaseTags:    c.Tags,
+		RepeatIndex: 1,
+	})
+}
+
+func (r *Runner) RunCaseWithMetadata(parent context.Context, c EvalCase, timeout time.Duration, metadata RunMetadata) CaseResult {
 	started := time.Now()
-	result := CaseResult{CaseID: c.ID, Tags: append([]string(nil), c.Tags...), Status: "failed"}
+	metadata, identityErr := normalizeRunMetadata(metadata, c)
+	result := CaseResult{
+		RunID:       metadata.RunID,
+		CaseID:      c.ID,
+		CaseVersion: c.Version,
+		RepeatIndex: metadata.RepeatIndex,
+		Tags:        append([]string(nil), c.Tags...),
+		Status:      "failed",
+	}
+	if identityErr != nil {
+		result.InfrastructureFailure = true
+		result.Error = "invalid_run_identity"
+		result.DurationMS = time.Since(started).Milliseconds()
+		return result
+	}
 	if err := c.Validate(); err != nil {
+		result.InfrastructureFailure = true
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
 	}
 	if r.Candidate == nil {
+		result.InfrastructureFailure = true
 		result.Error = "candidate model is required"
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
+	}
+	if parent == nil {
+		parent = context.Background()
 	}
 	ctx := parent
 	var cancel context.CancelFunc
@@ -55,12 +88,14 @@ func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Durati
 	}
 	store := newFixtureStore(c.Fixtures)
 	if err := store.Validate(); err != nil {
+		result.InfrastructureFailure = true
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
 	}
 	tools, err := interview.NewTools(store.Dependencies())
 	if err != nil {
+		result.InfrastructureFailure = true
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
@@ -69,24 +104,32 @@ func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Durati
 	if promptProvider == nil {
 		promptProvider = agentprompt.NewLocalPromptProvider()
 	}
+	promptProvider = promptAuditProvider{delegate: promptProvider}
 	builder, err := interview.NewBuilderWithPromptProvider(r.Candidate, promptProvider, tools...)
 	if err != nil {
+		result.InfrastructureFailure = true
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
 	}
-	executor, err := eino.NewExecutor(builder)
+	candidateCapture := NewTraceCapture(metadata.traceMetadata("candidate"))
+	executor, err := eino.NewExecutor(builder, eino.WithCallbackHandlers(newCandidateUsageCallback()))
 	if err != nil {
+		result.InfrastructureFailure = true
 		result.Error = err.Error()
 		result.DurationMS = time.Since(started).Milliseconds()
 		return result
 	}
 	req := chat.Request{History: toConversationHistory(c.Input.History), InterviewContext: c.Input.InterviewContext, UserMessage: conversation.Message{ID: "eval-user-" + c.ID, Role: conversation.MessageRoleUser, Content: c.Input.Query, Status: conversation.MessageStatusCompleted}}
 	sink := &captureSink{}
-	err = executor.Stream(ctx, req, sink)
+	candidateCtx := WithTraceCapture(ctx, candidateCapture)
+	err = executor.Stream(candidateCtx, req, sink)
+	result.Candidate = candidateCapture.Snapshot()
+	result.PromptResolution = candidateCapture.PromptResolution()
 	result.Answer = sink.text()
 	result.ToolTrace = store.traces()
 	if err != nil {
+		result.InfrastructureFailure = true
 		result.Error = sanitizeRunError(err)
 		result.Status = statusForError(err)
 	}
@@ -96,8 +139,13 @@ func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Durati
 		result.Status = "failed"
 	}
 	if err == nil && r.Judge != nil {
-		judgeResult, judgeErr := r.Judge.Evaluate(ctx, JudgeInput{CaseID: c.ID, Query: c.Input.Query, InterviewContext: c.Input.InterviewContext, Answer: result.Answer, ToolTrace: result.ToolTrace, ExpectedFacts: c.AnswerExpectations.MustContain, Rubric: c.AnswerExpectations.JudgeRubric})
+		judgeCapture := NewTraceCapture(metadata.traceMetadata("judge"))
+		judgeCtx := WithTraceCapture(ctx, judgeCapture)
+		judgeResult, judgeErr := r.Judge.Evaluate(judgeCtx, JudgeInput{CaseID: c.ID, Query: c.Input.Query, InterviewContext: c.Input.InterviewContext, Answer: result.Answer, ToolTrace: result.ToolTrace, ExpectedFacts: c.AnswerExpectations.MustContain, Rubric: c.AnswerExpectations.JudgeRubric})
+		judgeExecution := judgeCapture.Snapshot()
+		result.JudgeTrace = &judgeExecution
 		if judgeErr != nil {
+			result.InfrastructureFailure = true
 			result.Status = "unscored"
 			result.Error = "judge: " + sanitizeRunError(judgeErr)
 		} else {
@@ -122,6 +170,57 @@ func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Durati
 	}
 	result.DurationMS = time.Since(started).Milliseconds()
 	return result
+}
+
+func normalizeRunMetadata(metadata RunMetadata, c EvalCase) (RunMetadata, error) {
+	if metadata.RunID == "" {
+		var err error
+		metadata.RunID, err = NewRunID()
+		if err != nil {
+			return RunMetadata{}, err
+		}
+	}
+	if metadata.CaseID == "" {
+		metadata.CaseID = c.ID
+	}
+	if metadata.CaseID != c.ID {
+		return RunMetadata{}, fmt.Errorf("run metadata case id does not match case")
+	}
+	if metadata.CaseVersion == 0 {
+		metadata.CaseVersion = c.Version
+	}
+	if metadata.CaseVersion != c.Version {
+		return RunMetadata{}, fmt.Errorf("run metadata case version does not match case")
+	}
+	if metadata.RepeatIndex == 0 {
+		metadata.RepeatIndex = 1
+	}
+	if metadata.RepeatIndex < 1 {
+		return RunMetadata{}, fmt.Errorf("repeat index must be at least 1")
+	}
+	metadata.CaseTags = append([]string(nil), c.Tags...)
+	return metadata, nil
+}
+
+func (m RunMetadata) traceMetadata(role string) TraceMetadata {
+	modelName := m.CandidateModel
+	if role == "judge" {
+		modelName = m.JudgeModel
+	}
+	return TraceMetadata{
+		RunID:         m.RunID,
+		CaseID:        m.CaseID,
+		CaseVersion:   m.CaseVersion,
+		CaseTags:      m.CaseTags,
+		RepeatIndex:   m.RepeatIndex,
+		Role:          role,
+		GitCommit:     m.GitCommit,
+		Model:         modelName,
+		PromptKey:     m.PromptKey,
+		PromptVersion: m.PromptVersion,
+		PromptLabel:   m.PromptLabel,
+		PromptSource:  m.PromptSource,
+	}
 }
 
 func toConversationHistory(messages []EvalMessage) []conversation.Message {

@@ -2,6 +2,7 @@ package cozeloop
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -26,8 +27,16 @@ func New(cfg config.CozeLoopConfig) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("validate CozeLoop configuration: %w", err)
 	}
+	if strings.TrimSpace(cfg.APIBaseURL) == "" {
+		cfg.APIBaseURL = defaultEvaluationAPIBaseURL
+	}
 
 	client := &Client{cfg: cfg}
+	if cfg.CaptureContent {
+		if err := RequireContentConsent(cfg.ConsentPath, cfg.WorkspaceID, cfg.APIBaseURL, ConsentScopeTraceContent); err != nil {
+			return nil, errors.New("COZELOOP_CAPTURE_CONTENT requires active trace-content authorization")
+		}
+	}
 	if !cfg.Enabled {
 		return client, nil
 	}
@@ -36,17 +45,17 @@ func New(cfg config.CozeLoopConfig) (*Client, error) {
 		cozeloopsdk.WithWorkspaceID(strings.TrimSpace(cfg.WorkspaceID)),
 		cozeloopsdk.WithAPIToken(strings.TrimSpace(cfg.APIToken)),
 	}
+	if strings.TrimSpace(cfg.APIBaseURL) != "" {
+		options = append(options, cozeloopsdk.WithAPIBaseURL(strings.TrimSpace(cfg.APIBaseURL)))
+	}
 	if cfg.PromptCacheSize > 0 {
 		options = append(options, cozeloopsdk.WithPromptCacheMaxCount(cfg.PromptCacheSize))
 	}
 	if cfg.PromptRefreshInterval > 0 {
 		options = append(options, cozeloopsdk.WithPromptCacheRefreshInterval(cfg.PromptRefreshInterval))
 	}
-	// PromptTrace includes formatted prompt content in the SDK's Prompt Hub
-	// spans, so only enable it when content capture is explicitly allowed.
-	if cfg.PromptEnabled && cfg.CaptureContent {
-		options = append(options, cozeloopsdk.WithPromptTrace(true))
-	}
+	// Prompt Hub SDK traces are intentionally kept metadata-only: unlike the
+	// Eino callback parser, the SDK has no per-request revocation check for them.
 	sdkClient, err := cozeloopsdk.NewClient(options...)
 	if err != nil {
 		// Do not include the raw SDK error if it happens to echo credentials.

@@ -3,6 +3,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -33,18 +34,22 @@ type OpenAIConfig struct {
 // CozeLoopConfig 包含 CozeLoop 基础 Client 和 Prompt Hub 的进程级配置。
 // APIToken 只能来自环境变量或本地 .env，不得进入日志、SQLite 或 HTTP 响应。
 type CozeLoopConfig struct {
-	Enabled               bool
-	WorkspaceID           string
-	APIToken              string
-	Environment           string
-	ServiceName           string
-	CaptureContent        bool
-	PromptEnabled         bool
-	PromptKey             string
-	PromptVersion         string
-	PromptLabel           string
-	PromptCacheSize       int
-	PromptRefreshInterval time.Duration
+	Enabled                        bool
+	EvaluationEnabled              bool
+	EvaluationContentUploadEnabled bool
+	APIBaseURL                     string
+	ConsentPath                    string
+	WorkspaceID                    string
+	APIToken                       string
+	Environment                    string
+	ServiceName                    string
+	CaptureContent                 bool
+	PromptEnabled                  bool
+	PromptKey                      string
+	PromptVersion                  string
+	PromptLabel                    string
+	PromptCacheSize                int
+	PromptRefreshInterval          time.Duration
 }
 
 func Load() (Config, error) {
@@ -62,6 +67,14 @@ func Load() (Config, error) {
 	cozeLoopEnabled, err := envBool("COZELOOP_ENABLED", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse COZELOOP_ENABLED: %w", err)
+	}
+	cozeLoopEvaluationEnabled, err := envBool("COZELOOP_EVALUATION_ENABLED", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_EVALUATION_ENABLED: %w", err)
+	}
+	cozeLoopEvaluationContentUploadEnabled, err := envBool("COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED", false)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED: %w", err)
 	}
 	cozeLoopCaptureContent, err := envBool("COZELOOP_CAPTURE_CONTENT", false)
 	if err != nil {
@@ -99,18 +112,22 @@ func Load() (Config, error) {
 			Model:   os.Getenv("OPENAI_MODEL"),
 		},
 		CozeLoop: CozeLoopConfig{
-			Enabled:               cozeLoopEnabled,
-			WorkspaceID:           strings.TrimSpace(os.Getenv("COZELOOP_WORKSPACE_ID")),
-			APIToken:              strings.TrimSpace(os.Getenv("COZELOOP_API_TOKEN")),
-			Environment:           envTrimmedOr("COZELOOP_ENVIRONMENT", "local"),
-			ServiceName:           envTrimmedOr("COZELOOP_SERVICE_NAME", "interview-memory-agent"),
-			CaptureContent:        cozeLoopCaptureContent,
-			PromptEnabled:         cozeLoopPromptEnabled,
-			PromptKey:             envTrimmedOr("AGENT_PROMPT_KEY", "interview-review-agent"),
-			PromptVersion:         strings.TrimSpace(os.Getenv("AGENT_PROMPT_VERSION")),
-			PromptLabel:           envTrimmedOr("AGENT_PROMPT_LABEL", "development"),
-			PromptCacheSize:       promptCacheSize,
-			PromptRefreshInterval: promptRefreshInterval,
+			Enabled:                        cozeLoopEnabled,
+			EvaluationEnabled:              cozeLoopEvaluationEnabled,
+			EvaluationContentUploadEnabled: cozeLoopEvaluationContentUploadEnabled,
+			APIBaseURL:                     envTrimmedOr("COZELOOP_API_BASE_URL", "https://api.coze.cn"),
+			ConsentPath:                    filepath.Join(dataDir, "settings", "cozeloop-content-consent.json"),
+			WorkspaceID:                    strings.TrimSpace(os.Getenv("COZELOOP_WORKSPACE_ID")),
+			APIToken:                       strings.TrimSpace(os.Getenv("COZELOOP_API_TOKEN")),
+			Environment:                    envTrimmedOr("COZELOOP_ENVIRONMENT", "local"),
+			ServiceName:                    envTrimmedOr("COZELOOP_SERVICE_NAME", "interview-memory-agent"),
+			CaptureContent:                 cozeLoopCaptureContent,
+			PromptEnabled:                  cozeLoopPromptEnabled,
+			PromptKey:                      envTrimmedOr("AGENT_PROMPT_KEY", "interview-review-agent"),
+			PromptVersion:                  strings.TrimSpace(os.Getenv("AGENT_PROMPT_VERSION")),
+			PromptLabel:                    envTrimmedOr("AGENT_PROMPT_LABEL", "development"),
+			PromptCacheSize:                promptCacheSize,
+			PromptRefreshInterval:          promptRefreshInterval,
 		},
 	}, nil
 }
@@ -124,6 +141,15 @@ func (c Config) ValidateForCozeLoop() error {
 // Validate 校验启用 CozeLoop Client 所需的最小配置。错误只包含配置字段名，
 // 不包含 APIToken 的值。
 func (c CozeLoopConfig) Validate() error {
+	if c.CaptureContent && !c.Enabled {
+		return errors.New("COZELOOP_CAPTURE_CONTENT requires COZELOOP_ENABLED")
+	}
+	if (c.EvaluationEnabled || c.EvaluationContentUploadEnabled) && !c.Enabled {
+		return errors.New("CozeLoop evaluation requires COZELOOP_ENABLED")
+	}
+	if c.EvaluationContentUploadEnabled && !c.EvaluationEnabled {
+		return errors.New("COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED requires COZELOOP_EVALUATION_ENABLED")
+	}
 	if c.PromptEnabled && !c.Enabled {
 		return errors.New("COZELOOP_PROMPT_ENABLED requires COZELOOP_ENABLED")
 	}
@@ -136,6 +162,19 @@ func (c CozeLoopConfig) Validate() error {
 		}
 		if c.PromptRefreshInterval <= 0 {
 			return errors.New("COZELOOP_PROMPT_REFRESH_INTERVAL must be greater than zero")
+		}
+	}
+	if c.Enabled || c.EvaluationEnabled {
+		apiBaseURL := strings.TrimSpace(c.APIBaseURL)
+		if apiBaseURL == "" {
+			apiBaseURL = "https://api.coze.cn"
+		}
+		parsed, err := url.Parse(apiBaseURL)
+		if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return errors.New("COZELOOP_API_BASE_URL must be an http(s) URL without credentials, query, or fragment")
+		}
+		if parsed.Scheme != "https" && parsed.Hostname() != "localhost" && parsed.Hostname() != "127.0.0.1" && parsed.Hostname() != "::1" {
+			return errors.New("COZELOOP_API_BASE_URL must use HTTPS except for loopback hosts")
 		}
 	}
 	if !c.Enabled {

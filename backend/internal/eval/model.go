@@ -105,29 +105,50 @@ type ScoreBreakdown struct {
 	Total                *float64 `json:"total,omitempty"`
 }
 
+type TokenUsage struct {
+	PromptTokens     int `json:"promptTokens"`
+	CompletionTokens int `json:"completionTokens"`
+	TotalTokens      int `json:"totalTokens"`
+}
+
+type TraceExecution struct {
+	TraceID string      `json:"traceId,omitempty"`
+	Usage   *TokenUsage `json:"usage,omitempty"`
+}
+
 type CaseResult struct {
-	CaseID string   `json:"caseId"`
-	Tags   []string `json:"tags,omitempty"`
-	Status string   `json:"status"`
+	RunID       string          `json:"runId,omitempty"`
+	CaseID      string          `json:"caseId"`
+	CaseVersion int             `json:"caseVersion,omitempty"`
+	RepeatIndex int             `json:"repeatIndex,omitempty"`
+	Tags        []string        `json:"tags,omitempty"`
+	Status      string          `json:"status"`
+	Candidate   TraceExecution  `json:"candidate"`
+	JudgeTrace  *TraceExecution `json:"judgeTrace,omitempty"`
 	// Answer is retained in memory for Judge evaluation but is intentionally
 	// omitted from persisted reports; reports contain scores and reasons only.
-	Answer     string         `json:"-"`
-	ToolTrace  []ToolTrace    `json:"toolTrace,omitempty"`
-	HardChecks []HardCheck    `json:"hardChecks"`
-	Judge      *JudgeResult   `json:"judge,omitempty"`
-	Score      ScoreBreakdown `json:"score"`
-	Error      string         `json:"error,omitempty"`
-	DurationMS int64          `json:"durationMs"`
+	Answer                string            `json:"-"`
+	ToolTrace             []ToolTrace       `json:"toolTrace,omitempty"`
+	HardChecks            []HardCheck       `json:"hardChecks"`
+	Judge                 *JudgeResult      `json:"judge,omitempty"`
+	Score                 ScoreBreakdown    `json:"score"`
+	InfrastructureFailure bool              `json:"infrastructureFailure,omitempty"`
+	PromptResolution      *PromptResolution `json:"promptResolution,omitempty"`
+	Error                 string            `json:"error,omitempty"`
+	DurationMS            int64             `json:"durationMs"`
 }
 
 type ReportSummary struct {
-	Total    int     `json:"total"`
-	Passed   int     `json:"passed"`
-	Failed   int     `json:"failed"`
-	Unscored int     `json:"unscored"`
-	Scored   int     `json:"scored"`
-	Average  float64 `json:"average"`
-	Min      float64 `json:"min"`
+	Total           int     `json:"total"`
+	Valid           int     `json:"valid"`
+	Invalid         int     `json:"invalid"`
+	Passed          int     `json:"passed"`
+	Failed          int     `json:"failed"`
+	Unscored        int     `json:"unscored"`
+	Scored          int     `json:"scored"`
+	Average         float64 `json:"average"`
+	Min             float64 `json:"min"`
+	ReleaseEligible bool    `json:"releaseEligible"`
 }
 
 type PromptSelection struct {
@@ -137,13 +158,39 @@ type PromptSelection struct {
 	Source  string `json:"source,omitempty"`
 }
 
+type PromptResolution struct {
+	Requested      PromptSelection `json:"requested"`
+	Resolved       PromptSelection `json:"resolved"`
+	Fallback       bool            `json:"fallback"`
+	FallbackReason string          `json:"fallbackReason,omitempty"`
+	ContentHash    string          `json:"contentHash,omitempty"`
+}
+
+type CozeLoopSyncStatus struct {
+	Status           string    `json:"status"`
+	ErrorCategory    string    `json:"errorCategory,omitempty"`
+	DatasetKey       string    `json:"datasetKey,omitempty"`
+	DatasetID        string    `json:"datasetId,omitempty"`
+	DatasetVersion   string    `json:"datasetVersion,omitempty"`
+	DatasetVersionID string    `json:"datasetVersionId,omitempty"`
+	UploadedItems    int       `json:"uploadedItems,omitempty"`
+	ReusedItems      int       `json:"reusedItems,omitempty"`
+	PendingPayload   bool      `json:"pendingPayload,omitempty"`
+	SyncedAt         time.Time `json:"syncedAt,omitempty"`
+}
+
 type RunReport struct {
-	Version     int              `json:"version"`
-	Mode        string           `json:"mode"`
-	GeneratedAt time.Time        `json:"generatedAt"`
-	Prompt      *PromptSelection `json:"prompt,omitempty"`
-	Summary     ReportSummary    `json:"summary"`
-	Cases       []CaseResult     `json:"cases"`
+	Version        int                 `json:"version"`
+	Mode           string              `json:"mode"`
+	RunID          string              `json:"runId,omitempty"`
+	GitCommit      string              `json:"gitCommit,omitempty"`
+	CandidateModel string              `json:"candidateModel,omitempty"`
+	JudgeModel     string              `json:"judgeModel,omitempty"`
+	GeneratedAt    time.Time           `json:"generatedAt"`
+	Prompt         *PromptSelection    `json:"prompt,omitempty"`
+	CozeLoopSync   *CozeLoopSyncStatus `json:"cozeloopSync,omitempty"`
+	Summary        ReportSummary       `json:"summary"`
+	Cases          []CaseResult        `json:"cases"`
 }
 
 func (c EvalCase) Validate() error {

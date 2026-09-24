@@ -43,3 +43,23 @@ func TestScoreDeterministicChecksForbiddenAnswer(t *testing.T) {
 		t.Fatal("expected critical forbidden-content failure")
 	}
 }
+
+func TestScoreDeterministicRejectsEmptyAnswer(t *testing.T) {
+	c := EvalCase{ID: "case", Version: DatasetVersion, Input: EvalInput{Query: "q"}}
+	_, checks := ScoreDeterministic(c, " \n\t", nil)
+	if !HasCriticalFailure(checks) {
+		t.Fatal("expected empty answer to be a critical failure")
+	}
+	if check := findHardCheck(checks, "answer_nonempty"); check == nil || check.Passed {
+		t.Fatalf("answer_nonempty check = %#v, want failed check", check)
+	}
+}
+
+func findHardCheck(checks []HardCheck, name string) *HardCheck {
+	for i := range checks {
+		if checks[i].Name == name {
+			return &checks[i]
+		}
+	}
+	return nil
+}

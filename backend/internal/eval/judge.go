@@ -46,6 +46,11 @@ func (j *LLMJudge) Evaluate(ctx context.Context, input JudgeInput) (JudgeResult,
 			lastErr = err
 			continue
 		}
+		if message != nil && message.ResponseMeta != nil {
+			if capture := TraceCaptureFromContext(ctx); capture != nil {
+				capture.AddUsage(message.ResponseMeta.Usage)
+			}
+		}
 		var result JudgeResult
 		if err := json.Unmarshal([]byte(stripCodeFence(message.Content)), &result); err != nil {
 			lastErr = err

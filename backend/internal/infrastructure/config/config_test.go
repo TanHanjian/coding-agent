@@ -14,6 +14,9 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("OPENAI_BASE_URL", "https://example.invalid/v1")
 	t.Setenv("OPENAI_MODEL", "test-model")
 	t.Setenv("COZELOOP_ENABLED", "true")
+	t.Setenv("COZELOOP_EVALUATION_ENABLED", "true")
+	t.Setenv("COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED", "false")
+	t.Setenv("COZELOOP_API_BASE_URL", "https://api.coze.cn")
 	t.Setenv("COZELOOP_WORKSPACE_ID", "workspace-test")
 	t.Setenv("COZELOOP_API_TOKEN", "token-test")
 	t.Setenv("COZELOOP_ENVIRONMENT", " test ")
@@ -38,7 +41,7 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	if cfg.OpenAI.APIKey != "test-key" || cfg.OpenAI.BaseURL != "https://example.invalid/v1" || cfg.OpenAI.Model != "test-model" {
 		t.Fatalf("unexpected OpenAI config: %+v", cfg.OpenAI)
 	}
-	if !cfg.CozeLoop.Enabled || cfg.CozeLoop.WorkspaceID != "workspace-test" || cfg.CozeLoop.APIToken != "token-test" {
+	if !cfg.CozeLoop.Enabled || !cfg.CozeLoop.EvaluationEnabled || cfg.CozeLoop.EvaluationContentUploadEnabled || cfg.CozeLoop.APIBaseURL != "https://api.coze.cn" || cfg.CozeLoop.WorkspaceID != "workspace-test" || cfg.CozeLoop.APIToken != "token-test" {
 		t.Fatalf("unexpected CozeLoop credentials config: %+v", cfg.CozeLoop)
 	}
 	if cfg.CozeLoop.Environment != "test" || cfg.CozeLoop.ServiceName != "service-test" || cfg.CozeLoop.CaptureContent {
@@ -91,6 +94,9 @@ func TestValidateForChat(t *testing.T) {
 func TestLoadCozeLoopDefaults(t *testing.T) {
 	t.Setenv("APP_DATA_DIR", t.TempDir())
 	t.Setenv("COZELOOP_ENABLED", "")
+	t.Setenv("COZELOOP_EVALUATION_ENABLED", "")
+	t.Setenv("COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED", "")
+	t.Setenv("COZELOOP_API_BASE_URL", "")
 	t.Setenv("COZELOOP_WORKSPACE_ID", "")
 	t.Setenv("COZELOOP_API_TOKEN", "")
 	t.Setenv("COZELOOP_ENVIRONMENT", "")
@@ -109,6 +115,12 @@ func TestLoadCozeLoopDefaults(t *testing.T) {
 	}
 	if cfg.CozeLoop.Enabled {
 		t.Fatal("CozeLoop should be disabled by default")
+	}
+	if cfg.CozeLoop.EvaluationEnabled || cfg.CozeLoop.EvaluationContentUploadEnabled {
+		t.Fatal("CozeLoop evaluation and content upload should be disabled by default")
+	}
+	if cfg.CozeLoop.APIBaseURL != "https://api.coze.cn" {
+		t.Fatalf("APIBaseURL = %q, want default CozeLoop endpoint", cfg.CozeLoop.APIBaseURL)
 	}
 	if cfg.CozeLoop.Environment != "local" {
 		t.Fatalf("Environment = %q, want local", cfg.CozeLoop.Environment)
@@ -152,5 +164,17 @@ func TestValidateForCozeLoop(t *testing.T) {
 		APIToken:    "token",
 	}}).ValidateForCozeLoop(); err != nil {
 		t.Fatalf("expected valid CozeLoop configuration: %v", err)
+	}
+	if err := (Config{CozeLoop: CozeLoopConfig{EvaluationEnabled: true}}).ValidateForCozeLoop(); err == nil {
+		t.Fatal("evaluation should require COZELOOP_ENABLED")
+	}
+	if err := (Config{CozeLoop: CozeLoopConfig{Enabled: true, EvaluationContentUploadEnabled: true}}).ValidateForCozeLoop(); err == nil {
+		t.Fatal("evaluation content upload should require COZELOOP_EVALUATION_ENABLED")
+	}
+	if err := (Config{CozeLoop: CozeLoopConfig{CaptureContent: true}}).ValidateForCozeLoop(); err == nil {
+		t.Fatal("content capture should require COZELOOP_ENABLED")
+	}
+	if err := (Config{CozeLoop: CozeLoopConfig{Enabled: true, APIBaseURL: "http://api.coze.cn"}}).ValidateForCozeLoop(); err == nil {
+		t.Fatal("non-HTTPS CozeLoop endpoint should be rejected")
 	}
 }

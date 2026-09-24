@@ -793,22 +793,22 @@ CozeLoop 控制台完成。代码不会自动移动生产标签。
 
 让每个评测 case 的本地执行都可以关联到 CozeLoop Trace。
 
-### 工作内容
+### 实施约定
 
-1. Eval CLI 初始化 CozeLoop；
-2. 每个 case 创建稳定 Trace 元数据；
-3. 增加 `run_id`、`case_id`、`case_version`、tag、repeat index；每次新运行生成新 run_id；
-4. 区分 Candidate 和 Judge；
-5. 收集 Trace ID 和实际 Usage；
-6. 将 Trace ID 写入 `CaseResult`；
-7. 本地报告展示 Experiment/Trace 引用。
+- Eval CLI 每次启动生成一个 UUID v4 `run_id`；同一 CLI 调用内所有结果共享它。
+- `case_version` 使用 JSONL case 的 schema version；`repeat_index` 从 1 开始。
+- 执行身份为 `run_id + case_id + case_version + repeat_index`。Runner 校验传入 case identity 与实际 case 一致。
+- Candidate 和 Judge 分别记录 `traceId` 与 Usage；Candidate Usage 累加 Agent 工具循环中的每个模型响应，Judge Usage 累加所有实际返回 Usage 的评分尝试（包括格式错误后重试）。Usage 不可用时报告留空，不伪装成 0。
+- Trace metadata 只加 run/case/repeat/tag/role/commit 等受控字段；提示词、回答、工具参数和工具结果仍受内容采集授权开关控制。
+- CozeLoop Trace ID 由被装饰的同一个 Eino Callback Handler 捕获，不依赖不同 Handler 的未定义执行顺序。
+- 本地报告记录 Candidate/Judge Trace ID 和 Usage；未启用 CozeLoop 时 ID 留空，但本地身份和可采集 Usage 仍保留。
 
 ### 完成标准
 
-- 每个 case 可定位到 Trace；
-- Candidate/Judge Trace 不混淆；
-- 新运行和 repeat 可独立区分，同一结果重传复用原身份，commit/model/prompt 仅作元数据；
-- 未启用 CozeLoop 时本地报告仍正常。
+- Candidate/Judge Trace 和 Usage 可分别定位；
+- 新运行、case、schema version 和 repeat 可区分；同一执行报告重传沿用原身份；
+- CozeLoop metadata-only 模式不增加输入、输出或工具内容；
+- CozeLoop 关闭时本地报告仍正常。
 
 ## Step 7：评测集同步
 
@@ -825,7 +825,7 @@ CozeLoop 控制台完成。代码不会自动移动生产标签。
 5. 批量写入或更新数据项；
 6. 创建不可变评测集版本；
 7. 分离 case identity 与结果身份；按 run_id + case_id + case_version + repeat_index 重传幂等；
-8. 核实并测试第 12 节的平台 API 映射、外部键/版本/重复提交语义（待实现验证）；
+8. 对照公开 OpenAPI/生成 DTO 实现并用 fake server 测试字段映射、外部键和重复提交；目标 Workspace 的权限与真实 API 行为仍待实测；
 9. 同步内容执行授权、撤销检查和凭据/错误过滤。
 
 ### 完成标准
@@ -834,6 +834,14 @@ CozeLoop 控制台完成。代码不会自动移动生产标签。
 - 同一结果重传不重复，新运行和 repeat 不覆盖旧结果；平台字段映射经目标 API 验证后方可验收；
 - CozeLoop 数据项可以查看输入、期望、实际输出和 Trace；
 - 本地 JSONL 仍然可以独立运行。
+
+### 当前实施与验收状态
+
+- 已实现评测集 REST Adapter、固定 schema 校验、case/result 映射、稳定 item key、内容 hash、版本快照、授权复核、受限待同步 payload 和同 run 续传；本地 fake HTTP server 覆盖对应请求/响应与失败路径。
+- 评测集版本使用 `0.0.0+run.<run_id>`，按公开 API 声明的 SemVer 格式将 run 身份编码为 build metadata；payload 和每条 item 另外保存、校验完整 `run_id`。超出版本长度或含不适合 SemVer 的旧 run ID 使用确定性摘要作为版本标识，完整 ID 仍留在受限 payload 内。旧格式 pending payload 在读取时迁移为新格式；如果远端已有经过内容校验的旧版本，重试会复用该版本。
+- 本地 pending 读写拒绝静态符号链接、非普通文件和超限 payload，并在读取时校验打开文件身份；同账户并发替换目录的 TOCTOU 风险尚未由跨平台路径 API 完全消除。
+- 本地实现依据 CozeLoop [`evaluation.openapi.thrift`](https://github.com/coze-dev/coze-loop/blob/f27d2fb2/idl/thrift/coze/loop/evaluation/coze.loop.evaluation.openapi.thrift)、[`eval_set.thrift`](https://github.com/coze-dev/coze-loop/blob/f27d2fb2/idl/thrift/coze/loop/evaluation/domain/eval_set.thrift) 与生成 DTO；它不证明目标 Workspace 的权限、字段显示、版本快照、重复提交或部分写入语义。Step 7 在完成目标 Workspace 端到端验证前仍属于“实现完成、平台验收待验证”。
+- 同步和授权操作步骤见 [`evals/README.md`](../evals/README.md#可选同步到-cozeloop)。
 
 ## Step 8：CozeLoop Code 评估器
 

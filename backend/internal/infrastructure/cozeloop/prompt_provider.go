@@ -147,12 +147,17 @@ func (p *CozeLoopPromptProvider) Resolve(ctx context.Context, request agentpromp
 	if version == "" {
 		version = request.Version
 	}
+	contentHash, err := agentprompt.HashResolvedPrompt(ctx, templates, request.Variables)
+	if err != nil {
+		contentHash = agentprompt.HashPromptTemplates(templates)
+	}
 	return agentprompt.ResolvedPrompt{
-		Key:       key,
-		Version:   version,
-		Label:     request.Label,
-		Source:    agentprompt.SourceCozeLoop,
-		Templates: templates,
+		Key:         key,
+		Version:     version,
+		Label:       request.Label,
+		Source:      agentprompt.SourceCozeLoop,
+		ContentHash: contentHash,
+		Templates:   templates,
 	}, nil
 }
 

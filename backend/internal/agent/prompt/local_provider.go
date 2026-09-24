@@ -34,11 +34,17 @@ func (p *LocalPromptProvider) Resolve(ctx context.Context, request Request) (Res
 		return ResolvedPrompt{}, errors.New("unsupported local prompt key: " + key)
 	}
 
+	templates := interviewReviewTemplates()
+	contentHash, err := HashResolvedPrompt(ctx, templates, request.Variables)
+	if err != nil {
+		contentHash = HashPromptTemplates(templates)
+	}
 	return ResolvedPrompt{
-		Key:       AgentPromptKey,
-		Version:   EmbeddedVersion,
-		Source:    SourceLocal,
-		Templates: interviewReviewTemplates(),
+		Key:         AgentPromptKey,
+		Version:     EmbeddedVersion,
+		Source:      SourceLocal,
+		ContentHash: contentHash,
+		Templates:   templates,
 	}, nil
 }
 
