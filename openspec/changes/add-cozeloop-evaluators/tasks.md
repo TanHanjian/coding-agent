@@ -18,10 +18,10 @@
 ## 3. 显式评估器工作流与校准资产
 
 - [x] 3.1 新增独立命令 `backend/cmd/cozeloop-evaluators`，提供本地 `validate`、远程 `debug --key --inputs <json-file>` 和 `publish --apply --key --inputs <json-file>`；publish 必须先成功 Validate + BatchDebug 才能写远端元数据，同内容固定版本复用、冲突停止。用命令测试验证本地校验无需凭据、远程动作显式触发、publish 缺少 `--apply` 时不加载配置/创建客户端，以及 API Token 不出现在错误或调试输出中。
-- [ ] 3.2 新增 10–15 个 case 的人工校准记录模板，以及初始含 `workspace_verification=pending` 的 `evals/cozeloop/acceptance.md`；验证模板记录 case/version、人工/平台分数、差异、评估器版本和证据且不含凭据。
-- [ ] 3.3 更新 `docs/cozeloop-platform-integration-technical-design.md` 中 Step 8–9 状态及 `evals/README.md` 相关操作说明；核对命令与 CLI 一致，并明确区分 fake/local 测试和目标 Workspace 验收。
+- [x] 3.2 新增 10–15 个 case 的人工校准记录模板，以及初始含 `workspace_verification=pending` 的 `evals/cozeloop/acceptance.md`；验证模板记录 case/version、人工/平台分数、差异、评估器版本和证据且不含凭据。
+- [x] 3.3 更新 `docs/cozeloop-platform-integration-technical-design.md` 中 Step 8–9 状态及 `evals/README.md` 相关操作说明；核对命令与 CLI 一致，并明确区分 fake/local 测试和目标 Workspace 验收。
 
 ## 4. 集成验证
 
-- [ ] 4.1 运行 `cd backend && go test -mod=readonly ./...`、`cd backend && go vet ./...` 和 `git diff --check`；修复回归时不得回滚用户已有的未提交改动。
-- [ ] 4.2 按 `specs/cozeloop-evaluators/spec.md` 逐项 review 最终实现；除非另行实测并记录证据，所有 Workspace 专属检查均保持待验证状态。
+- [x] 4.1 运行 `cd backend && go test -mod=readonly ./...`、`cd backend && go vet ./...` 和 `git diff --check`；修复回归时不得回滚用户已有的未提交改动。
+- [x] 4.2 按 `specs/cozeloop-evaluators/spec.md` 逐项 review 最终实现；除非另行实测并记录证据，所有 Workspace 专属检查均保持待验证状态。

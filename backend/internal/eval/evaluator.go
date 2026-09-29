@@ -108,35 +108,45 @@ func BuildEvaluatorInputBatch(definition EvaluatorDefinition, cases []EvalCase, 
 		if result.InfrastructureFailure {
 			continue
 		}
-		item := items[index]
-		input := EvaluatorInputData{}
-		if definition.Type == EvaluatorTypePrompt {
-			input.InputFields = make(map[string]EvaluatorFieldContent, len(definition.InputSchemas))
-		} else {
-			input.EvaluateDatasetFields = make(map[string]EvaluatorFieldContent)
-			input.EvaluateTargetOutputFields = make(map[string]EvaluatorFieldContent)
-		}
-
-		for _, schema := range definition.InputSchemas {
-			value, exists := item.Fields[schema.Key]
-			if !exists {
-				if schema.Required {
-					return nil, fmt.Errorf("evaluator input field %q is unavailable", schema.Key)
-				}
-				value = ""
-			}
-			content := EvaluatorFieldContent{ContentType: EvaluatorContentTypeText, Text: value}
-			if definition.Type == EvaluatorTypePrompt {
-				input.InputFields[schema.Key] = content
-			} else if schema.Key == "actual_output" {
-				input.EvaluateTargetOutputFields[schema.Key] = content
-			} else {
-				input.EvaluateDatasetFields[schema.Key] = content
-			}
+		input, err := projectEvaluatorInput(definition, items[index].Fields)
+		if err != nil {
+			return nil, err
 		}
 		inputs = append(inputs, input)
 	}
 	return inputs, nil
+}
+
+// projectEvaluatorInput creates the platform input shape from only the fields
+// declared by an evaluator. Code evaluators keep actual_output in the target
+// output group; Prompt evaluators use input_fields for every declared value.
+func projectEvaluatorInput(definition EvaluatorDefinition, fields map[string]string) (EvaluatorInputData, error) {
+	input := EvaluatorInputData{}
+	if definition.Type == EvaluatorTypePrompt {
+		input.InputFields = make(map[string]EvaluatorFieldContent, len(definition.InputSchemas))
+	} else {
+		input.EvaluateDatasetFields = make(map[string]EvaluatorFieldContent)
+		input.EvaluateTargetOutputFields = make(map[string]EvaluatorFieldContent)
+	}
+
+	for _, schema := range definition.InputSchemas {
+		value, exists := fields[schema.Key]
+		if !exists {
+			if schema.Required {
+				return EvaluatorInputData{}, fmt.Errorf("evaluator input field %q is unavailable", schema.Key)
+			}
+			value = ""
+		}
+		content := EvaluatorFieldContent{ContentType: EvaluatorContentTypeText, Text: value}
+		if definition.Type == EvaluatorTypePrompt {
+			input.InputFields[schema.Key] = content
+		} else if schema.Key == "actual_output" {
+			input.EvaluateTargetOutputFields[schema.Key] = content
+		} else {
+			input.EvaluateDatasetFields[schema.Key] = content
+		}
+	}
+	return input, nil
 }
 
 // EnsureEvaluatorResource reuses only one exact-name evaluator with the same

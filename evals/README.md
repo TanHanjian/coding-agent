@@ -34,6 +34,65 @@ go run ./cmd/eval --mode live --require-prompt-version --prompt-version 1.0.0 --
 
 总分 100：工具行为 40 分，答案硬断言 20 分，Judge 质量评分 40 分。`>=80` 为通过；硬断言失败直接失败；Judge 不可用时为 `unscored`。
 
+## 可选：CozeLoop 评估器
+
+评估器定义和资产位于 `evals/cozeloop/`。先执行离线校验；此命令不需要 CozeLoop 凭据，也不会发起网络请求：
+
+```powershell
+cd backend
+go run -mod=readonly ./cmd/cozeloop-evaluators validate
+# 可选：只校验一个定义
+go run -mod=readonly ./cmd/cozeloop-evaluators validate --key answer-faithfulness
+```
+
+远程 `debug` 和 `publish` 会上传评估输入及实际回答。执行前，需配置 `COZELOOP_ENABLED=true`、`COZELOOP_EVALUATION_ENABLED=true`、`COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED=true`、`COZELOOP_WORKSPACE_ID`、`COZELOOP_API_TOKEN` 和 `COZELOOP_API_BASE_URL`，并显式授予当前 Workspace 的内容上传授权：
+
+```powershell
+cd backend
+go run -mod=readonly ./cmd/cozeloop-consent status
+go run -mod=readonly ./cmd/cozeloop-consent grant --scopes evaluation-dataset-content
+```
+
+为单个 evaluator 准备本地 `--inputs` JSON 文件。输入必须由操作者显式提供，并包含待评估的实际 Candidate 输出；以下是 `answer-faithfulness` 的格式示例。请用获准上传的真实样例替换占位内容，不要将凭据或未经授权的用户数据写入仓库：
+
+```json
+[
+  {
+    "input_fields": {
+      "input_query": {"content_type": "Text", "text": "<sample question>"},
+      "interview_context": {"content_type": "Text", "text": "<sample context>"},
+      "required_facts": {"content_type": "Text", "text": "<sample reference facts>"},
+      "actual_output": {"content_type": "Text", "text": "<actual candidate output>"}
+    }
+  }
+]
+```
+
+LLM evaluator 使用 `input_fields`。Code evaluator 则将实际回答放入 `evaluate_target_output_fields`，其余声明的字段放入 `evaluate_dataset_fields`。例如 `answer-nonempty` 的输入格式为：
+
+```json
+[
+  {
+    "evaluate_target_output_fields": {
+      "actual_output": {"content_type": "Text", "text": "<actual candidate output>"}
+    }
+  }
+]
+```
+
+从 `backend/` 执行远程调试或显式发布；将 `<local-inputs.json>` 替换为对应 evaluator 的本地输入文件路径：
+
+```powershell
+go run -mod=readonly ./cmd/cozeloop-evaluators debug --key answer-faithfulness --inputs <local-inputs.json>
+go run -mod=readonly ./cmd/cozeloop-evaluators publish --apply --key answer-faithfulness --inputs <local-inputs.json>
+
+# Code evaluator 示例：输入文件须按上方 evaluate_target_output_fields 格式准备
+go run -mod=readonly ./cmd/cozeloop-evaluators debug --key answer-nonempty --inputs <local-inputs.json>
+go run -mod=readonly ./cmd/cozeloop-evaluators publish --apply --key answer-nonempty --inputs <local-inputs.json>
+```
+
+`debug` 会先执行远程 Validate，再执行 BatchDebug。`publish` 必须提供 `--apply`，并在任何远程元数据变更前通过这两项检查；它只复用内容哈希匹配的固定版本，遇到版本冲突会停止。不要从持久化评测报告重建实际回答，也不要为了生成 evaluator 输入而重新运行 Agent。远程操作前会检查功能开关与当前内容授权；`COZELOOP_CAPTURE_CONTENT` 不是评测内容授权的替代品。评估器发布、fake-server 测试及本地校验均不等同于目标 Workspace 验收；请在 `evals/cozeloop/acceptance.md` 留存不含凭据的 Workspace 证据，未实测时保持 `workspace_verification=pending`。
+
 ## 可选：同步到 CozeLoop
 
 同步会上传 case 输入、fixture/期望、Agent 输出、脱敏工具轨迹、评分、Usage 和 Trace ID。它默认关闭，且必须同时开启配置并明确授予本地内容授权。先在 `backend/.env` 配置 `COZELOOP_ENABLED=true`、`COZELOOP_EVALUATION_ENABLED=true`、`COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED=true`、Workspace ID、API Token 和 API Base URL；不要把 Token 写入报告或提交到仓库。`COZELOOP_CAPTURE_CONTENT` 是 Trace 内容采集的独立开关，不会替代评测内容授权。

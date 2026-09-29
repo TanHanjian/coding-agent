@@ -8,7 +8,6 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/signal"
 	"strings"
@@ -131,28 +130,15 @@ func run(ctx context.Context, args []string, stdout, stderr io.Writer, dependenc
 		return nil
 	}
 
-	evaluator, err := eval.EnsureEvaluatorResource(ctx, platform, definition)
+	published, err := eval.PublishEvaluator(ctx, platform, definition)
 	if err != nil {
 		return redactCLIError(err, cfg.CozeLoop.APIToken)
-	}
-	version, exists, err := eval.FindEvaluatorVersion(ctx, platform, evaluator.ID, definition)
-	if err != nil {
-		return redactCLIError(err, cfg.CozeLoop.APIToken)
-	}
-	if !exists {
-		if _, err := platform.UpdateEvaluatorDraft(ctx, evaluator.ID, definition); err != nil {
-			return redactCLIError(fmt.Errorf("update evaluator draft: %w", err), cfg.CozeLoop.APIToken)
-		}
-		version, err = eval.EnsureEvaluatorVersion(ctx, platform, evaluator.ID, definition)
-		if err != nil {
-			return redactCLIError(err, cfg.CozeLoop.APIToken)
-		}
 	}
 	state := "published"
-	if exists {
+	if published.Reused {
 		state = "reused"
 	}
-	fmt.Fprintf(stdout, "%s evaluator %s at version %s\n", state, definition.Key, version.Version)
+	fmt.Fprintf(stdout, "%s evaluator %s at version %s\n", state, definition.Key, published.Version.Version)
 	return nil
 }
 
@@ -230,56 +216,7 @@ func evaluatorJSONEOF(decoder *json.Decoder) error {
 }
 
 func debugEvaluator(ctx context.Context, platform eval.EvaluatorPlatform, definition eval.EvaluatorDefinition, inputs []eval.EvaluatorInputData) ([]eval.EvaluatorDebugResult, error) {
-	if len(inputs) == 0 {
-		return nil, errors.New("evaluator debug requires at least one input")
-	}
-	validation, err := platform.ValidateEvaluator(ctx, definition, inputs[0])
-	if err != nil {
-		return nil, fmt.Errorf("remote evaluator validation failed: %w", err)
-	}
-	if !validation.Valid {
-		return nil, errors.New("remote evaluator validation rejected the definition or first input")
-	}
-	if err := validateDebugResult(validation.Result); err != nil {
-		return nil, fmt.Errorf("remote evaluator validation did not produce a successful result: %w", err)
-	}
-	results, err := platform.BatchDebugEvaluator(ctx, definition, inputs)
-	if err != nil {
-		return nil, fmt.Errorf("remote evaluator batch debug failed: %w", err)
-	}
-	if len(results) != len(inputs) {
-		return nil, errors.New("remote evaluator batch debug returned an incomplete result set")
-	}
-	seenIndexes := make(map[int]struct{}, len(results))
-	for _, result := range results {
-		if result.InputIndex < 0 || result.InputIndex >= len(inputs) {
-			return nil, errors.New("remote evaluator batch debug returned an invalid input index")
-		}
-		if _, duplicate := seenIndexes[result.InputIndex]; duplicate {
-			return nil, errors.New("remote evaluator batch debug returned a duplicate input index")
-		}
-		seenIndexes[result.InputIndex] = struct{}{}
-		if err := validateDebugResult(&result.Result); err != nil {
-			return nil, fmt.Errorf("remote evaluator debug input %d failed: %w", result.InputIndex, err)
-		}
-	}
-	return results, nil
-}
-
-func validateDebugResult(result *eval.EvaluatorExecutionResult) error {
-	if result == nil {
-		return errors.New("evaluator output is missing")
-	}
-	if result.Status != "success" {
-		if result.ErrorCategory != "" {
-			return fmt.Errorf("evaluator execution failed (%s)", result.ErrorCategory)
-		}
-		return errors.New("evaluator execution failed")
-	}
-	if result.Score == nil || math.IsNaN(*result.Score) || math.IsInf(*result.Score, 0) || strings.TrimSpace(result.Reason) == "" {
-		return errors.New("evaluator output must include a finite score and non-empty reason")
-	}
-	return nil
+	return eval.DebugEvaluator(ctx, platform, definition, inputs)
 }
 
 func writeDebugResults(output io.Writer, definition eval.EvaluatorDefinition, results []eval.EvaluatorDebugResult, token string) {

@@ -866,6 +866,12 @@ CozeLoop 控制台完成。代码不会自动移动生产标签。
 - 评估器版本固定；
 - 不删除本地关键失败规则。
 
+### 当前实施与验收状态
+
+- 仓库已包含版本化 Code evaluator 资产、清单、领域 port、CozeLoop adapter 和独立 CLI；离线 manifest 校验及 fake HTTP/本地测试用于验证本地定义和公开 IDL 映射。
+- 这些本地检查不证明 Code runtime 在目标 Workspace 可用。Workspace 权限、字段解释、Validate/Debug 行为和固定版本发布仍待实测；在 acceptance 记录证据前，不宣称 Step 8 平台验收完成。
+- 本地确定性评分和关键失败仍为判断依据；CozeLoop 结果不得覆盖本地结论。
+
 ## Step 9：CozeLoop LLM 评估器
 
 ### 目标
@@ -889,6 +895,12 @@ CozeLoop 控制台完成。代码不会自动移动生产标签。
 - 评估器版本可追踪；
 - 人工评分与 LLM 评分差异被记录；
 - 未校准前不作为 CI 硬门禁。
+
+### 当前实施与验收状态
+
+- 仓库已包含四个独立 LLM evaluator 定义、Prompt 资产、固定版本及独立 debug/publish 工作流；具体命令和授权步骤见 [`evals/README.md`](../evals/README.md#可选cozeloop-评估器)。
+- 10–15 个 case 的人工校准记录模板位于 [`evals/cozeloop/acceptance.md`](../evals/cozeloop/acceptance.md#llm-评估器人工校准)。模板不代表已有线上分数或校准结论；未完成并复核前，平台 LLM 分数仅为 advisory。
+- Workspace 的模型配置、评估器运行与发布、分数/理由映射仍待真实环境验证；`workspace_verification` 保持 pending。
 
 ## Step 10：自动提交评测实验
 

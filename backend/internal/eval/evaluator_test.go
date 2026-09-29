@@ -216,6 +216,42 @@ func repositoryPath(t *testing.T, parts ...string) string {
 }
 
 // Input mapping tests.
+func TestProjectEvaluatorInputUsesDeclaredFieldsAndDefaultsOptionalValues(t *testing.T) {
+	optional := EvaluatorDefinition{
+		Key: "optional", Name: "Optional", Type: EvaluatorTypeCode, Version: "1.0.0", AssetFile: "optional.py",
+		InputSchemas: []EvaluatorFieldSchema{
+			{Key: "actual_output", Type: "string", Required: true},
+			{Key: "input_query", Type: "string"},
+		},
+		OutputSchemas: []EvaluatorFieldSchema{{Key: "score", Type: "number", Required: true}},
+	}
+	input, err := projectEvaluatorInput(optional, map[string]string{"actual_output": "answer", "ignored": "must not pass"})
+	if err != nil {
+		t.Fatalf("projectEvaluatorInput() error = %v", err)
+	}
+	if got := input.EvaluateTargetOutputFields["actual_output"].Text; got != "answer" {
+		t.Fatalf("actual_output = %q, want answer", got)
+	}
+	if got := input.EvaluateDatasetFields["input_query"].Text; got != "" {
+		t.Fatalf("optional input_query = %q, want empty text", got)
+	}
+	if len(input.InputFields) != 0 || len(input.EvaluateDatasetFields) != 1 || len(input.EvaluateTargetOutputFields) != 1 {
+		t.Fatalf("projected groups = %#v, want only declared Code fields", input)
+	}
+}
+
+func TestProjectEvaluatorInputRejectsMissingRequiredField(t *testing.T) {
+	definition := EvaluatorDefinition{
+		Key: "required", Name: "Required", Type: EvaluatorTypePrompt, Version: "1.0.0", AssetFile: "required.py",
+		InputSchemas:  []EvaluatorFieldSchema{{Key: "actual_output", Type: "string", Required: true}},
+		OutputSchemas: []EvaluatorFieldSchema{{Key: "score", Type: "number", Required: true}},
+	}
+	_, err := projectEvaluatorInput(definition, nil)
+	if err == nil || err.Error() != `evaluator input field "actual_output" is unavailable` {
+		t.Fatalf("projectEvaluatorInput() error = %v, want missing required field", err)
+	}
+}
+
 func TestBuildEvaluatorInputBatchMapsDeclaredFieldsAndPreservesOrder(t *testing.T) {
 	manifest, err := LoadEvaluatorManifestFile(repositoryPath(t, "evals", "cozeloop", "evaluators.v1.json"))
 	if err != nil {
