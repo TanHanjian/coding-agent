@@ -1,9 +1,9 @@
 # Phase 2 技术设计：AgentRun 生命周期与聊天接入
 
-> 状态：方案范围已确认，接口/Schema 细节待实现前 Review；**Phase 2 代码尚未实现**。
+> 状态：方案范围已确认；经独立开工确认，**切片 1 的 Run 领域模型与聊天契约已实现并通过测试**。其余持久化、运行接线、恢复和生产装配尚未实现，Phase 2 功能未交付。
 > 所属变更：[refactor-conversation-message-tree](../openspec/changes/refactor-conversation-message-tree/design.md)。
 > 前置设计：[Phase 1 Entry Tree](phase1-entry-tree-technical-design.md)。
-> 本次只落实文档，不修改 Go、前端、migration 或生产装配。
+> 最初方案轮只落实文档；后续实现按切片单独批准。切片 1 不修改前端、migration 或生产装配。
 
 ## 1. 已确认决策与范围
 
@@ -560,7 +560,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 | 切片 | 内容 | 完成门禁 |
 | --- | --- | --- |
 | 0 | 同步本设计与 OpenSpec、审查 Schema/状态/兼容契约 | 文档一致，不宣称代码完成 |
-| 1 | Run 类型、状态纯函数、GenerationStore/Recorder 骨架、fixtures | 可编译，旧代码未装配新路径 |
+| 1 | Run 类型、状态纯函数、GenerationStore/Recorder 骨架、fixtures | 已实现并通过编译/测试；旧代码未装配新路径，等待用户 review |
 | 2 | 提取包内 append/move/message Tx core | Phase 1 行为及测试不变，无嵌套事务 |
 | 3 | migration、BeginTurn 与 pending Run | 幂等、active 索引、创建/Commit 故障回滚 |
 | 4 | MarkRunning、生命周期窗口、文本门禁、终态/补偿 | 注册失败不遗留可执行假成功、终态唯一 |
@@ -615,13 +615,24 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - 重复恢复无副作用；旧 client返回中断结果，新 client创建新 Run。
 - 已执行工具不自动重放，失败分支不删除。
 
-实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。本轮没有实现或运行 Phase 2 Go 测试，不能把 Phase 1 全量测试当作这些检查已通过。
+实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。最初文档轮未实现或运行 Phase 2 Go 测试；当前切片 1 的检查见 §13.6，不代表其余 Run 集成检查已通过。
 
 ### 13.5 本轮文档检查记录
 
 从本文提取 schema 草案，在 Node `node:sqlite` / SQLite 3.53.3 的临时内存库中检查：第二个 active Run、重复 client key、跨会话 Entry 引用、缺少 final Entry 的 completed 被拒绝；旧 Run 终态后可创建新 Run；整体会话 cascade 后 foreign_key_check 无错误。
 
 未连接项目数据库，未执行真实 migration，也未运行 Phase 2 Go 实现测试。此记录只验证 SQL 草案的相关行为，不替代 modernc.org/sqlite 集成测试、状态机或业务验收。
+
+### 13.6 切片 1 实现与检查记录
+
+- 新增 `domain/agentrun/{model,state}.go` 及测试：六状态、转换、仅引用 Run、结构校验、深拷贝、随机 ID、仅 active Run 可构造 head token。
+- `ValidateRun` 只检查本地结构。初始 user 版本为 base+1；存在后续事实时至少推进两次且必须有启动时间。归属、闭合祖先及实际 head 一致性仍须后续事务验证。
+- 时间检查存在性，不以墙钟先后拒绝快照，避免系统校时/重启导致合法终态无法收敛。ErrorCode 暂仅检查有界分类格式；批准分类白名单和安全文案映射在运行接线前定稿。
+- 扩展 `application/chat/{ports,types}.go`：GenerationStore、RunRecorder、RecoveryStore；Run/expected token/完整最终消息及输入输出 Clone。旧 TurnStore 与生产调用路径保留不变。
+- 契约 fixtures 只做编译检查，不提供成功假实现。具体 Recorder、串行化、持久化失败不推进 token 及 Executor 转发尚未实现。
+- 定向测试及 `cd backend && go test -count=1 ./...` 通过；独立 review 的版本下限和未启动终态引用问题已修复并补充反例测试。
+- `go test -race -count=1 ./internal/domain/agentrun/... ./internal/application/chat/...` 未能运行：当前环境未启用 CGO；不宣称 race 通过。OpenSpec CLI 不可用，未执行 CLI validate。
+- 不勾选包含 schema/adapter 的复合 OpenSpec 任务，不宣称 Phase 2 已完成。切片 2 及后续修改仍需用户批准。
 
 ## 14. 风险、回滚与未决实现细节
 

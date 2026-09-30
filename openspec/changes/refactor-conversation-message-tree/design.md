@@ -2,12 +2,12 @@
 
 ## 1. Scope and Delivery Map
 
-本文落实已批准的规划，不授权本轮修改业务代码或 migration。产品阶段标签 `[MVP] / [Phase 2] / [Phase 3]` 与实施顺序 **Implementation Phase 1/2/3/...** 独立。
+本文落实已批准的规划；切片 1 的 Run 领域模型与聊天契约已经独立批准并实现，不代表授权后续业务接线或 migration。产品阶段标签 `[MVP] / [Phase 2] / [Phase 3]` 与实施顺序 **Implementation Phase 1/2/3/...** 独立。
 
 | Implementation phase | Product phase | Boundary |
 |---|---|---|
 | Phase 1 | MVP | 已实现独立 Entry Tree 代码/测试：message、user/assistant/toolResult、leaf+version CAS、安全白名单；未接 ChatTurn |
-| Phase 2 | MVP | 待实现 AgentRun 生命周期、ChatTurn 原子集成、完整安全 assistant/toolResult 事实、取消/恢复；旧线性模型 history 和现有 HTTP/SSE 保留 |
+| Phase 2 | MVP | Run 领域模型与聊天契约骨架已实现；ChatTurn 原子集成、完整安全 assistant/toolResult 事实、取消/恢复及生产接线仍待实现；旧线性模型 history 和现有 HTTP/SSE 保留 |
 | Phase 3 | MVP | 待实现 Context Projection 与模型适配器转换，才切换模型 history 来源 |
 | Phase 4 | Phase 2 | 未来 compaction、预算、摘要提交/复用 |
 | Optional follow-up | Phase 2 | 未来独立可选 artifact/TTL，在核心 Run/Projection 之后；不属于 Phase 1 或 Phase 2 Run |

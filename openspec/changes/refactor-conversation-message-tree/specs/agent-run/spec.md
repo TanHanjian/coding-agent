@@ -2,7 +2,7 @@
 
 ## Scope
 
-本规范是产品 MVP、实施 Phase 2 的待实现契约。既有 Phase 1 只提供树基础，不表示 Run、原子 ChatTurn 集成、恢复或完整工具持久化已实现。实施 Phase 2 模型 MUST 继续读取旧线性 History；切换 Projection 属于实施 Phase 3。参见 [design](../../design.md)、[tasks](../../tasks.md) 和 [Entry Tree spec](../entry-tree/spec.md)。
+本规范是产品 MVP、实施 Phase 2 的契约。切片 1 已实现 Run 领域模型/状态机与聊天契约骨架，但具体持久化、原子 ChatTurn 集成、恢复或完整工具接线尚未实现；Phase 1 树基础与当前契约测试不能替代这些验收。实施 Phase 2 模型 MUST 继续读取旧线性 History；切换 Projection 属于实施 Phase 3。参见 [design](../../design.md)、[tasks](../../tasks.md) 和 [Entry Tree spec](../entry-tree/spec.md)。
 
 ## Requirements
 

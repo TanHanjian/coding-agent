@@ -2,7 +2,7 @@
 
 ## Status and Phase Convention
 
-`[MVP] / [Phase 2] / [Phase 3]` 是产品阶段；下列 Phase 0/1/2/... 是 **Implementation Phase**。checked 仅保留已实现的 Phase 1 基础代码/测试，不表示已接聊天、完成 Run/Projection/Compaction 或本轮已重新运行测试。所有新增规划任务均 unchecked。本轮只落实文档，代码/migration 开工仍需独立授权。
+`[MVP] / [Phase 2] / [Phase 3]` 是产品阶段；下列 Phase 0/1/2/... 是 **Implementation Phase**。checked 仅保留已实现的 Phase 1 基础代码/测试，不表示已接聊天、完成 Run/Projection/Compaction 或本轮已重新运行测试。新增复合规划任务仍 unchecked。经独立授权已实现 Phase 2 切片 1 契约基础，但其所属复合任务尚缺 schema/adapter；进度见 Phase 2 段。后续代码/migration 切片仍需独立授权。
 
 范围见 [proposal](proposal.md)、[design](design.md)；实施 Phase 2 细节见 [AgentRun Technical Design](../../../docs/phase2-agent-run-technical-design.md)。
 
@@ -32,7 +32,9 @@
 
 ## Phase 2: AgentRun Lifecycle and Atomic ChatTurn Integration
 
-本实施阶段全部待实现，属于产品 MVP。模型仍使用旧线性 History/旧摘要与当前 Run 内存工具循环；不接 Projection、compaction、artifact、Draft、通用持久化 RunEvent、SSE replay/resync/revision 或公共分支 API。
+本实施阶段属于产品 MVP，尚未完成功能交付。模型仍使用旧线性 History/旧摘要与当前 Run 内存工具循环；不接 Projection、compaction、artifact、Draft、通用持久化 RunEvent、SSE replay/resync/revision 或公共分支 API。
+
+切片 1 进度：已新增 `domain/agentrun` 领域模型/状态机/结构校验与测试，以及聊天 GenerationStore/RunRecorder/RecoveryStore 契约、Run/完整最终消息/token 与深拷贝测试。定向及 `cd backend && go test -count=1 ./...` 通过；race 因未启用 CGO 未运行。当前仍使用旧 TurnStore 生产路径，无 migration、具体 Recorder、事务 adapter 或运行装配改造；首条复合任务保持 unchecked。细节见技术设计 §13.6，完成切片 1 review 后再单独批准切片 2。
 
 - [ ] Task: [MVP] 定义 reference-only Run contract、repository port 与新增 schema
   - Acceptance: 包含 base_entry_id/base_head_version、user/last/last_closed/final entry、head_version、legacy user/assistant IDs、client id、状态、脱敏错误及时间，无 body/raw tool JSON；FinalEntryID 仅 completed 存在。
