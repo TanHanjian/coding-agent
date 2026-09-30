@@ -1,8 +1,8 @@
 # Phase 1 技术设计：Conversation Entry Tree
 
-> 状态：Draft / 待代码实现前 Review。本文中的 Go 类型、SQL 和流程均为**拟议设计**，不是已实现代码。
+> 状态：Phase 1 基础实现已落地；本文保留设计契约，Go/SQL 示例不保证逐字对应当前源码。
 > 所属变更：[refactor-conversation-message-tree](../openspec/changes/refactor-conversation-message-tree/design.md)。
-> 本文只更新 Phase 1 设计；不修改 Go、前端、现有 migration 或其他 OpenSpec 文件。
+> 后续设计：[Phase 2 AgentRun 生命周期与聊天接入](phase2-agent-run-technical-design.md)。本次文档同步不修改业务代码。
 
 ## 1. 目标和阶段边界
 
@@ -35,14 +35,14 @@
 
 ### 1.3 与此前规划的差异
 
-现有 OpenSpec 的 Phase 1 tasks 仍包含 Compaction 类型和 artifact 生命周期；Entry Tree spec 也包含 system/thinking 等通用消息能力。本文依据后续讨论收紧为：
+最初 OpenSpec 曾将 Compaction、artifact 生命周期和 system/thinking 通用能力混入基础阶段。本次文档同步按已确认决定对齐为：
 
 1. Phase 1 实际写入只支持 `kind=message` 和三种角色；
 2. 安全工具投影从首个工具 Entry 开始强制执行，不能先存原文再补隐私；
 3. artifact、compaction 等属于后续 capability；
 4. SSE 保持当前锁内“注册订阅者 + 复制快照”，不在本阶段改造。
 
-**实施前必须同步 proposal/design/spec/tasks 的阶段边界；当前不能宣称它们已经完全一致。** 产品交付阶段 MVP/Phase 2 与这里的实施步骤 Phase 1/2 不是同一套编号。
+proposal/design/spec/tasks 已按这些阶段边界同步；这不是未来 Run/Projection/Compaction 已实现的声明。产品交付阶段 MVP/Phase 2 与这里的实施步骤 Phase 1/2 不是同一套编号，详见 Phase 2 文档阶段映射。
 
 ## 2. 仓库现状与为什么需要新模型
 
@@ -699,9 +699,9 @@ go test ./...
 
 race 工具链若不可用需记录原因，不能写成已通过。本轮只写文档，不运行真实 migration，不宣称业务测试已完成。不需要启动前端或 LLM。
 
-### 11.4 本轮文档校验记录
+### 11.4 初次设计稿 SQL 校验记录
 
-本轮未实现领域代码或 migration，只对本文 SQL 做了临时内存库 smoke check：
+以下保留最初撰写本文时的检查记录：当时未实现领域代码或 migration，只对本文 SQL 做了临时内存库 smoke check。该历史记录不替代后续 Go 实现和回归测试：
 
 - 使用本机 Node `node:sqlite`，SQLite 3.53.3；没有连接项目数据库；
 - 验证了跨会话 parent/head 引用被拒绝、节点 UPDATE 和单节点 DELETE 被拒绝；
@@ -748,14 +748,14 @@ Phase 1 完成标准：
 - [ ] 未声称已接入 Run/Projection/Compaction/Draft/event replay；
 - [ ] 更新 OpenSpec 阶段范围并完成用户 review，再分层批准代码实现。
 
-### 实现前仍需 Review 的提议
+### 后续接入的 Review 检查点
 
-本文已给出推荐方案而非留下空白接口：沿用随机 Entry ID、独立 head 表、版本 CAS、lazy head、bounded Go parent 回溯、封闭安全 payload。但这些技术选择仍待代码开工前 review，尤其是：
+Phase 1 已提供随机 Entry ID、独立 head、版本 CAS、lazy head、bounded parent 回溯和安全投影；它仍不是生产聊天写入来源。
 
-1. 单 Entry 1 MiB、路径10000条的容量保护起点；
-2. 哪些具体工具字段允许持久化以及策略版本；
-3. 将 head reset 到 nil（多 root / 会话虚拟根）的内部操作语义；
-4. 后续安全工具历史如何转换为 LLM 背景事实，而不是假装完整参数可重放；
-5. 与 OpenSpec 未同步的 system/thinking/artifact 范围。
+1. 单 Entry 1 MiB、路径10000条是当前默认保护值，运行接入时仍需容量验收。
+2. 具体生产工具允许字段及策略版本在 Phase 2 接线前审计。
+3. head reset 到 nil 是内部基础能力，不代表前端分支导航已开放。
+4. 安全工具历史不能恢复完整原始参数，Phase 3 必须明确背景事实映射或分类错误。
+5. system prompt 原文、thinking、artifact 和 compaction不属于 Phase 1 已交付能力。
 
-不能把本文未实现功能、未同步规范或未批准容量当作生产契约。
+Phase 2 按独立技术文档实施；不得把基础设施能力等同于已完成运行接入或模型历史切换。

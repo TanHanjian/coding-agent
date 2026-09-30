@@ -1,98 +1,155 @@
 # Tasks
 
+## Status and Phase Convention
+
+`[MVP] / [Phase 2] / [Phase 3]` 是产品阶段；下列 Phase 0/1/2/... 是 **Implementation Phase**。checked 仅保留已实现的 Phase 1 基础代码/测试，不表示已接聊天、完成 Run/Projection/Compaction 或本轮已重新运行测试。所有新增规划任务均 unchecked。本轮只落实文档，代码/migration 开工仍需独立授权。
+
+范围见 [proposal](proposal.md)、[design](design.md)；实施 Phase 2 细节见 [AgentRun Technical Design](../../../docs/phase2-agent-run-technical-design.md)。
+
 ## Phase 0: Contract Review
 
-- [ ] Task: 固化 capability map 与跨模块术语
-  - Acceptance: `entry-tree`、`agent-run`、`context-projection`、`context-compaction` 四个 module id、依赖方向和单 active leaf 边界写入并通过 review。
-  - Verify: 逐条核对 proposal、design、四份 spec 的术语和状态一致；不得出现具名 Branch 或完整原始工具 payload 的隐含要求。
-  - Files: `proposal.md`、`design.md`、`specs/*/spec.md`、`tasks.md`
+- [ ] Task: [MVP / Phase 2] 验收阶段与跨模块契约一致性
+  - Acceptance: 四个 module id、依赖、产品/实施编号、单 active leaf、安全投影 MVP 强制边界一致；Phase 1 只含 message 三角色基础，Phase 2 只做 Run 集成且保留旧模型 history，Phase 3 才切 Projection。
+  - Verify: 手工逐项核对 proposal/design/tasks 与四份 spec；无 system/thinking/media/Compaction/artifact 已完成声明，无 Entry append 请求幂等、通用 RunEvent 表、公共分支或原始协议重建承诺。OpenSpec CLI 不可用，不能宣称 CLI validate 通过。
+  - Files: `proposal.md`、`design.md`、`tasks.md`、`specs/*/spec.md`
 
-- [ ] Task: 确认旧表双写、迁移失败和 source of truth 策略
-  - Acceptance: 明确 `messages`、`generation_events`、`conversation_context_summaries` 在每个迁移阶段的读写职责和失败处理。
-  - Verify: 形成迁移矩阵并通过设计 review。
-  - Files: `design.md`、`tasks.md`
+- [ ] Task: [MVP / Phase 2] 验收事务与迁移矩阵并完成独立代码开工 review
+  - Acceptance: 明确 Entry 事实、Run 引用、messages 可见正文、Hub 展示和旧摘要的 source of truth；BeginTurn/成功收尾/结果 batch/失败回退各自共享事务；恢复先于服务；artifact/TTL 独立可选。
+  - Verify: 对照详细 Phase 2 设计和迁移矩阵 review；未知 head 不自动修补，旧 client id 不伪造回填。设计批准不等于本轮代码授权。
+  - Files: `design.md`、`tasks.md`、相关技术设计文档
 
 ## Phase 1: Entry Tree Foundation
 
-- [ ] Task: 定义 Entry、Message、ToolCall、ToolResult、Compaction 和安全投影领域契约
-  - Acceptance: 类型具备稳定 ID、parent、payload version、role/kind 分离、toolCallId 配对和 schema version；未知 entry type 有明确兼容策略。
-  - Verify: domain 单元测试覆盖 root/child、非法 parent、重复 ID、版本不兼容和工具配对。
-  - Files: `backend/internal/domain/conversation/`、对应测试
+- [x] Task: [MVP] 定义 message Entry、head、工具关联与安全白名单基础契约
+  - Acceptance: 已实现稳定 ID、parent、payload version、user/assistant/toolResult、text/toolCall、独立结果关联、版本化 SafeToolCall/SafeToolResult、白名单投影及路径/工具组校验；不含 system/thinking/media、Compaction、artifact 或 Draft。
+  - Verify: 已有 domain/codec/security 测试覆盖消息结构、调用配对/次序、pending/closed path、未知版本、字段过滤与有界 preview；本任务不声称真实工具或聊天已接线。
+  - Files: `backend/internal/domain/conversation/entry*.go`、相关测试、`backend/internal/infrastructure/repository/sqlite/entry_tree_codec.go`
 
-- [ ] Task: 增加 Entry Tree repository port 与 SQLite migration
-  - Acceptance: 可以读取 active leaf、按 expected parent 原子追加、回溯指定 leaf 路径和移动 active leaf；旧表数据不被删除。
-  - Verify: SQLite 临时数据库测试并发 CAS、外键、索引、回滚和删除会话行为。
-  - Files: `backend/internal/application/`、`backend/internal/infrastructure/repository/sqlite/`、`backend/internal/infrastructure/storage/migrations/`
+- [x] Task: [MVP] 实现独立 Entry Tree port、SQLite repository 与基础 migration
+  - Acceptance: 已实现 GetHead/Get/ReadPath/ListChildren/Append/MoveHead、同会话约束、leaf+version CAS/ABA、防原地改写、COMMIT 失败回滚与会话整体删除；旧聊天未接入新树，无 client id 幂等 append 声明。
+  - Verify: 已有 SQLite/存储测试覆盖空 head、完整路径、内部分支、闭合移动点、并发 CAS、外键/索引、回滚、corruption/容量与删除；代码/测试存在不等于本轮重新执行通过。
+  - Files: `backend/internal/domain/conversation/entry_store.go`、`backend/internal/infrastructure/repository/sqlite/entry_tree*.go`、`backend/internal/infrastructure/repository/sqlite/sql_test/entry_tree*_test.go`、`backend/internal/infrastructure/storage/migrations/0008_conversation_entry_tree.sql`
 
-- [ ] Task: 实现工具级安全投影和 artifact port
-  - Acceptance: 未声明字段默认不存；敏感字段被拒绝；结果超过上限时只存预览和不透明 artifact 引用；artifact 按会话隔离并支持过期。
-  - Verify: 字段白名单、凭据过滤、大小上限、路径穿越、跨会话读取、TTL、原子发布和清理测试。
-  - Files: `backend/internal/domain/`、`backend/internal/application/`、`backend/internal/infrastructure/`
+## Phase 2: AgentRun Lifecycle and Atomic ChatTurn Integration
 
-## Phase 2: AgentRun Lifecycle
+本实施阶段全部待实现，属于产品 MVP。模型仍使用旧线性 History/旧摘要与当前 Run 内存工具循环；不接 Projection、compaction、artifact、Draft、通用持久化 RunEvent、SSE replay/resync/revision 或公共分支 API。
 
-- [ ] Task: 将当前 ChatTurn 生命周期映射为 AgentRun port
-  - Acceptance: 一个 client id 只创建一个 Run；同一会话同时第二个请求返回 conflict；Run 状态覆盖 pending/running/waiting_tool/completed/failed/cancelled。
-  - Verify: 幂等、并发开始、取消竞争、失败终态和新 client id 重提测试。
-  - Files: `backend/internal/application/chat/`、`backend/internal/domain/`、SQLite repository 与测试
+- [ ] Task: [MVP] 定义 reference-only Run contract、repository port 与新增 schema
+  - Acceptance: 包含 base_entry_id/base_head_version、user/last/last_closed/final entry、head_version、legacy user/assistant IDs、client id、状态、脱敏错误及时间，无 body/raw tool JSON；FinalEntryID 仅 completed 存在。
+  - Verify: 状态/引用单测；conversation+client id 唯一索引、active conversation 部分唯一约束、assistant Message 查询关联与恢复查询索引测试；复合归属、跨会话拒绝及整体删除不被新 FK 阻塞。
+  - Files: `backend/internal/domain/`、`backend/internal/application/chat/`、SQLite repository、新增 migration 与测试
 
-- [ ] Task: 迁移 generation event 与运行时 hub 的脱敏契约
-  - Acceptance: RunEvent/Hub 保留 step 顺序、文本快照和安全工具摘要；原始参数、结果、凭据和内部错误不进入事件、日志或 SSE。
-  - Verify: reconnect、慢订阅者、终态竞争、事件序列和隐私断言测试。
-  - Files: `backend/internal/application/chat/generation.go`、`service.go`、HTTP stream 编码与测试
+- [ ] Task: [MVP] 在同一事务接入 BeginTurn 并保持幂等优先
+  - Acceptance: 先查 Run/旧 Message pair，再检查 active Run/legacy streaming busy；新请求的 user Entry、旧消息对、pending Run、base token 与 head all-or-nothing；初始 last=last_closed=user。只有旧对无 Run 的 client id 必须只复用，不执行、不创建 Run/Entry。
+  - Verify: 新/旧/终态/活跃幂等、另一请求 busy 时旧 id 仍复用、跨会话相同 id、并发新 id、关联损坏、CAS/INSERT/COMMIT 故障注入；失败零残留且不启动模型。
+  - Files: `backend/internal/infrastructure/repository/sqlite/chat_turn_store.go`、tx-local Entry/Run helpers、chat types/ports、测试
 
-- [ ] Task: 实现重启前置收敛
-  - Acceptance: 新实例在接受请求前将遗留 active Run/streaming read model 原子收敛为 `failed/generation_interrupted`；不恢复模型执行、不因 Hub 缺失单独判定失败。
-  - Verify: 重启、单实例锁、恢复事务失败阻止就绪、重复恢复幂等和旧 client id 重试测试。
-  - Files: 启动装配、storage/repository、chat recovery 与测试
+- [ ] Task: [MVP] 实现 active head 不变量与统一失败回退事务
+  - Acceptance: active LastEntryID/HeadVersion 匹配 head；LastClosedEntryID 只在闭合点推进；failed/cancelled/recovery 的 pending group 分支保留，CAS 移回 LastClosedEntryID，LastEntryID 保留最后事实，HeadVersion 为操作后版本；闭合组 head 不变，FinalEntryID=nil。
+  - Verify: 全缺/部分结果失败、闭合组后失败、初始 user 闭合点、ABA/CAS 冲突、损坏 target、事务回滚；无节点删除/改 parent、无 fake cancelled result、无部分失败 assistant Entry，终态 LastEntryID 可不同于 head。
+  - Files: Run/ChatTurn repository、domain contracts、生命周期测试
+
+- [ ] Task: [MVP] 增加可传播错误的完整 assistant 消息控制 hook
+  - Acceptance: 从完整模型响应取得有序 text/toolCall，工具执行前安全投影并提交 assistant call/head/Run waiting_tool；不把 Graph 显示回调、SSE 摘要或 checkpoint 当事实。无调用的最终响应交给原子成功收尾，不提前单独插入最终 Entry，也不伪造适配器未提供的 block 次序。
+  - Verify: 完整消息含多 call/多 block、流式参数收敛、模型中断、显示摘要信息不足、投影/持久化失败时工具未执行；hook 错误传播不被 callback 吞掉。
+  - Files: `backend/internal/agent/interview/builder.go`、`backend/internal/agent/eino/`、chat executor/ports、集成测试
+
+- [ ] Task: [MVP] 将逐工具安全策略接到真实事实/显示边界
+  - Acceptance: 实际工具注册并 review 版本白名单；只持久化有界安全 call/result，raw 参数/结果只供当前内存执行，不进入 Entry/Run/messages/log/diagnostic/backup/SSE；preview 来源为批准字段，不提供 raw fallback。
+  - Verify: 未注册策略、未批准字段、字段值凭据、原始错误、超限参数、UTF-8 结果截断、安全编码回读与 Entry/Run/旧消息/日志/SSE 隐私断言；SafeToolCall 不被当作可重放 arguments。
+  - Files: 工具策略与 adapter、chat/agent 编排、安全测试
+
+- [ ] Task: [MVP] 原子批次提交独立工具结果并控制下一模型调用
+  - Acceptance: 完整结果按 assistant 声明次序成为独立 Entry，单事务提交全部结果/head/Run；闭合后 last_closed=last、状态回 running。失败批次全回滚并阻断下一模型调用，不自动重放或制造缺失结果。
+  - Verify: 并行逆序完成、多工具、真实工具错误、重复/错配/缺失结果、每个 INSERT/CAS/COMMIT 失败、取消中的迟到结果、超工具循环上限；下一模型只能在提交成功后继续。
+  - Files: Graph 控制 hook、Run/Entry tx-local batch helpers、工具集成测试
+
+- [ ] Task: [MVP] 保留旧文本 checkpoint 并实现原子成功收尾
+  - Acceptance: checkpoint 只更新 streaming Message，无 Draft/可变 Entry/Run body；扩展现有 FinishAssistant，flush 后一次事务提交完整最终 assistant+head+completed Run（含 final/last/last_closed/head_version）+legacy assistant terminal；COMMIT 后才广播终态，不要求新公开 API。
+  - Verify: 长文本 checkpoint、最终无工具响应、工具循环后最终响应、相同终态（包括 head 已回退）先复用而不重复追加/不同终态 conflict、Recorder/BeginTurn/恢复 token 传递、缺失/失效 expected token、最终 Entry/Run/旧终态/COMMIT 失败、先广播禁止断言；保留旧可见文本且不以原始工具对象填正文。
+  - Files: chat service/writer/sink、ChatTurn repository、生命周期测试
+
+- [ ] Task: [MVP] 处理 Start 注册/MarkRunning 窗口并补偿启动失败
+  - Acceptance: 尚未启动 goroutine 时 Hub/Registry 注册、MarkRunning 或启动准备失败必须 failedRun+旧 read model 原子收敛，按统一 head 策略处理并清理本次资源；注册和 running 状态提交后才启动模型；Start/Cancel 短窗口串行且等待不持锁；补偿失败明确报错。
+  - Verify: 注册/状态提交故障、窗口中旧 id 重试/Cancel 竞争、资源清理、补偿存储故障、原 client id 复用失败快照、新 id 可再次开始、无模型执行；该分支不作为 HTTP Cancel 的第二个 finalizer。
+  - Files: `backend/internal/application/chat/service.go`、registry/hub、Run store、测试
+
+- [ ] Task: [MVP] 实现 detached Cancel 与唯一 generation finalizer
+  - Acceptance: HTTP Cancel 只发信号并等待/重读，generation goroutine 负责停止迟到写、独立收尾上下文 flush、唯一终态事务和提交后广播；已观察取消不再成功，已成功提交不被迟到取消覆盖；执行继承进程 root 关闭信号而非浏览器请求取消。
+  - Verify: 浏览器断连不中止、进程 root 取消/关闭顺序、重复取消、取消/模型完成/错误竞争、终态后 hook/checkpoint/event 拒绝、事务失败不广播成功、已闭合 head 保持和 pending group 回退。
+  - Files: chat service/generation/registry、Run transitions、并发测试
+
+- [ ] Task: [MVP] 实现单实例所有权下的服务前置恢复
+  - Acceptance: 取得进程所有权后、开放请求前原子收敛 active Run+streaming read model 为 failed/generation_interrupted，保留正文；legacy orphan 同样失败但无 Run/Entry backfill。未知/不一致 head、引用或恢复存储失败必须阻止启动，不恢复模型/工具。
+  - Verify: pending/running/waiting_tool 重启、闭合保持/pending 回退、orphan 文本、重复恢复、跨会话引用、未知 head/version、恢复故障阻止就绪、单实例冲突、旧 client id 重试只复用。
+  - Files: 启动装配、ownership/recovery、SQLite repository、测试
+
+- [ ] Task: [MVP] 保持 assistantMessageID HTTP/SSE 与安全展示契约
+  - Acceptance: 公共 Start/Subscribe/Cancel IDs 保持；Hub 同锁快照+订阅、有限 step 摘要、终态 Message 快照和慢客户端非阻塞策略保持；不持久化通用 RunEvent，不新增 replay/resync/revision，不凭 Hub 缺失判 generation_interrupted。
+  - Verify: 活跃/终态/重启订阅、慢客户端重新取快照、运行中缺失 Hub/Registry、ID/role/会话隔离、无 raw tool/think/credential/prompt 泄露、无虚构历史工具卡片或可靠事件投递承诺。
+  - Files: chat generation/service、HTTP stream 编码与兼容测试
+
+- [ ] Task: [MVP] 完成 Phase 2 原子集成与旧模型路径回归验收
+  - Acceptance: 核心 Entry+Run+messages 新请求集成在本阶段完成，不推迟至 cleanup；现有模型读取仍为旧线性历史，尚未开放公共分支；所有新 Run 任务有代码/测试证据后才勾选。
+  - Verify: ChatTurn 故障矩阵、SQLite migration/删除会话、HTTP/SSE、工具迭代、并发终态、隐私断言和 `cd backend && go test ./...`；不因基础测试存在而标记 Run 已实现。
+  - Files: chat/agent/repository 集成测试、验收记录
 
 ## Phase 3: Context Projection
 
-- [ ] Task: 从 active leaf 构造 provenance-preserving projection
-  - Acceptance: 只读取当前 root-to-leaf 路径；branch 切换后旧路径不再进入上下文；compaction/context edit 规则有稳定顺序；每个投影消息可定位 source entry。
-  - Verify: 树分支、上下文编辑、多个 compaction、空 root 和未知 metadata 测试。
-  - Files: `backend/internal/agent/context/`、domain ports 与测试
+- [ ] Task: [MVP] 构造一致 active-path 与 provenance-preserving projection
+  - Acceptance: 只读取合法完整 root-to-leaf；每条消息可追溯 Entry/版本/策略，工具事实保留关联与截断/降级 metadata；失败分支不混入历史；当前阶段不实现 compaction/context edit 等未来类型。
+  - Verify: 内部分支选择、空 root、跨会话/缺失/循环/超容量/未知版本、closed/pending path、安全来源查询测试。
+  - Files: `backend/internal/agent/context/`、domain/context ports 与测试
 
-- [ ] Task: 实现 provider-neutral AgentMessage 到 Eino schema.Message 转换
-  - Acceptance: user/assistant/toolResult 的角色、tool call/result 关联和安全错误标记不丢失；不支持的结构返回明确错误；旧线性消息仍可兼容读取。
-  - Verify: 普通文本、thinking/tool call、多个并发结果、旧历史、孤立/重复/缺失工具结果和 provider 边界测试。
-  - Files: `backend/internal/agent/eino/executor.go`、context converter、测试
+- [ ] Task: [MVP] 定义安全历史转换策略并实现模型适配器边界
+  - Acceptance: 安全字段不是原始参数，无法合法表达就明确拒绝或采用已批准的整组事实文本降级；保持 provenance/错误/次序，不承诺原始协议重建，不自动执行历史工具。适配器无静默丢失，无 thinking/media MUST。
+  - Verify: 普通文本、多工具安全组、截断/字段丢弃、未批准映射拒绝、批准文本降级、孤立/重复/缺失结果、不可支持 block 和模型边界测试；完整当前 Run 内存协议与历史投影区分。
+  - Files: context converter、`backend/internal/agent/eino/`、context/adapter 测试
 
-- [ ] Task: 将 ContextManager 从旧 History seam 迁移到 Entry/Projection seam
-  - Acceptance: 调用方不能绕过 ContextManager 自行选择 history；`PreparedContext` 保留安全 metadata，不携带完整工具 payload；最终模型调用前可以取得预算校验结果。
-  - Verify: manager 单测、executor 集成测试、旧 PassThrough 兼容测试。
-  - Files: `backend/internal/application/chat/context.go`、`types.go`、`backend/internal/agent/context/`
+- [ ] Task: [MVP] 切换 ContextManager seam 并显式兼容 legacy history
+  - Acceptance: Phase 3 才从旧 History 切换 Projection；旧文本使用真实 legacy 来源和明确迁移水位，避免遗漏/重复旧历史及重复本次 user；不从重试、旧摘要或显示事件伪造 Entry/工具事实。
+  - Verify: manager/executor 集成、新树/纯旧/混合历史、受控兼容原因、去重水位、一致性失败、预算内 legacy text 测试；调用方不绕过 context seam 自选历史。
+  - Files: chat context/types、`backend/internal/agent/context/`、executor、测试
 
-## Phase 4: Context Compaction
+## Phase 4: Future Context Compaction
 
-- [ ] Task: 实现预算模型与完整逻辑组选择器
-  - Acceptance: 预算满足“输入估算 + 输出预留 + 安全余量 <= 窗口”；用户轮次和 assistant tool-call/tool-result 组不可拆；无合法边界时明确失败。
-  - Verify: 中文、代码、长参数、大结果、多工具、unknown window、超大单组和最终复检测试。
+以下属于产品 Phase 2，不属于实施 Phase 2 Run。
+
+- [ ] Task: [Phase 2] 实现最终预算与完整逻辑组选择器
+  - Acceptance: 每次模型调用校验输入估算+输出预留+安全余量<=窗口，包括运行期 system/tool schema 开销但不持久化 prompt 原文；按完整用户轮次/工具组选择安全前缀，保护当前请求和 pending group；artifact 非前置。
+  - Verify: 中文/代码/工具增长、unknown window、超大单组、有界安全结果、无合法边界容量错误和每次调用复检。
   - Files: `backend/internal/agent/context/`、预算/选择器测试
 
-- [ ] Task: 实现 compaction 摘要生成、校验和树节点提交
-  - Acceptance: 摘要只覆盖程序选定的完整前缀；摘要 schema、source boundary、预算和 tool protocol 校验通过后才追加 entry；失败不推进边界。
-  - Verify: 摘要模型失败、空/超预算/非法摘要、CAS 冲突、重复提交和重启复用测试。
-  - Files: `backend/internal/agent/context/`、summary repository、SQLite migration 与测试
+- [ ] Task: [Phase 2] 实现 compaction 生成、来源校验与原子树提交/复用
+  - Acceptance: 只总结选定当前路径安全事实，schema/source boundary/tool protocol/预算和 leaf+version CAS 成功才追加 compaction；失败不推进，原始事实保留，重启复用合法摘要。不读取失败分支/raw 工具/think/credential。
+  - Verify: 模型失败、空/超预算/非法摘要、跨分支来源、CAS/存储冲突、多 compaction、无 pending 切割、重启复用；未知摘要拒绝/重建。
+  - Files: context summary/compaction、Entry 版本/schema 扩展、新增 migration 与测试
 
-- [ ] Task: 处理旧 `covered_sequence` 摘要迁移
-  - Acceptance: 旧线性摘要不会被伪装成树节点；可通过明确的 legacy boundary 映射或失效重建；sequence 有间隙和旧数据不错误推进 tree boundary。
-  - Verify: 已有 summary、无 summary、迁移中断、模型切换和重建测试。
-  - Files: `backend/internal/agent/context/summary*`、migration、测试
+- [ ] Task: [Phase 2] 明确旧 covered_sequence 摘要迁移
+  - Acceptance: 旧线性摘要只通过显式 legacy mapping 或失效重建进入新 Projection，不伪装为树 Entry/path 覆盖水位；保持隐私与来源边界。
+  - Verify: sequence 间隙、未回填历史、已有/无 summary、迁移中断、模型配置变化与重建/容量错误。
+  - Files: context summary repository/converter、迁移方案与测试
+
+## Optional Follow-up: Restricted Artifact Capability
+
+- [ ] Task: [Phase 2] 在核心 Run/Projection 后独立批准和实施 artifact/TTL
+  - Acceptance: 可选能力有不透明 ID、会话/Run/call 隔离、受限读取额度、TTL、原子发布和清理；不提供 raw tool/凭据/think 持久化旁路，永久 Entry 只保留有界安全事实。不属于基础或本次 Run 开工任务。
+  - Verify: 独立 scope/privacy review，过期、跨会话、额度、物理路径隔离、发布回滚和清理；未启用时 MVP 安全 preview/truncated/容量失败仍可工作。
+  - Files: 待独立 review 的 artifact ports/storage/tests，不预建无调用方表
 
 ## Phase 5: Compatibility and Cleanup
 
-- [ ] Task: 完成 user/assistant 与安全工具 Entry 双写及回填
-  - Acceptance: 新请求在事务边界内保持 Entry Tree、AgentRun、旧 messages/read model 的可诊断一致；双写失败不返回虚假成功。
-  - Verify: 双写成功/失败、部分提交、回填重试、旧 API 读取和删除会话测试。
-  - Files: chat turn store/service、repository、migrations、integration tests
+- [ ] Task: [MVP / Phase 2] 验收显式历史迁移，不延后核心新请求集成
+  - Acceptance: 核心双写已在 Phase 2 原子完成；旧 user/assistant text 历史迁移需明确水位、去重、失败状态与独立批准，不在旧 client id 重试中制造 Run/Entry，也不伪造工具协议。旧 read model 保留可用。
+  - Verify: 新/旧/混合历史、迁移中断/重试、旧 API/会话删除、summary source boundary、受控兼容回退理由。
+  - Files: 显式迁移/回填方案、repository/context、兼容测试
 
-- [ ] Task: 切换生产读取路径并保留兼容回退
-  - Acceptance: Context Projection 成为新请求的模型历史来源；旧线性路径只作为受控兼容回退，且回退原因有 metadata。
-  - Verify: 新树、旧历史、混合迁移会话、工具投影和压缩会话的端到端测试。
-  - Files: chat service、context manager、Eino executor、tests
+- [ ] Task: [MVP / Phase 2] 验收后独立评估旧模型路径清理
+  - Acceptance: Projection 已成为通过验收的新历史来源；旧路径删除需另行批准，不隐含删除 messages。兼容回退不绕过来源/工具协议/安全检查，不承诺直接回滚旧二进制。
+  - Verify: 纯旧/新树/混合/安全工具/未来压缩会话端到端，migration 版本与备份/回滚 review。
+  - Files: chat/context/executor、兼容方案与测试
 
-- [ ] Task: 完成文档、验收和代码 review
-  - Acceptance: 四份 spec 的每项 MUST 都有测试或可观测验收证据；未实现功能不标记完成；不删除已有隐私和重启约束。
-  - Verify: `go test ./...`、SQLite migration tests、HTTP/SSE integration tests、静态隐私扫描和人工 review。
-  - Files: `docs/`、OpenSpec artifacts、测试报告
+- [ ] Task: [MVP / Phase 2] 完成文档、规范与分阶段代码验收
+  - Acceptance: 每项适用 MUST 有测试或可观测证据；未来 compaction/artifact 和未实现 Run/Projection 不标完成；不存在 Draft、通用 RunEvent 表、SSE 重放、自动工具重放或 thinking 持久化隐含范围。
+  - Verify: 手工 OpenSpec 一致性/链接检查、`cd backend && go test ./...`、SQLite migration、HTTP/SSE、隐私扫描和人工 review；CLI/工具链不可用必须如实记录。
+  - Files: 本 change artifacts、技术设计与测试报告
