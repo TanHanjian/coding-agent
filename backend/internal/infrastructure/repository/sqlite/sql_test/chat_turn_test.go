@@ -20,7 +20,7 @@ func TestChatTurnRepositoryBeginTurnCreatesAndReusesMessagePair(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(ctx, db.DB); err != nil {
+	if err := storage.Migrate(ctx, db); err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()

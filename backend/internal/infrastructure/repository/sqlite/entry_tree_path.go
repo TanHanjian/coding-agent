@@ -2,9 +2,10 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
 
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
@@ -21,54 +22,33 @@ func parseRFC3339(s string) (time.Time, error) {
 	return t.UTC(), nil
 }
 
-func checkConversationExists(ctx context.Context, tx *sql.Tx, conversationID string) (time.Time, error) {
-	var updatedAtStr string
-	err := tx.QueryRowContext(ctx, "SELECT updated_at FROM conversations WHERE id = ?", conversationID).Scan(&updatedAtStr)
+func checkConversationExists(ctx context.Context, tx *gorm.DB, conversationID string) (time.Time, error) {
+	var row conversationRow
+	err := tx.WithContext(ctx).Select("updated_at").Where("id = ?", conversationID).Take(&row).Error
 	if err != nil {
-		if err == sql.ErrNoRows {
+		if err == gorm.ErrRecordNotFound {
 			return time.Time{}, domainerr.ErrNotFound
 		}
 		return time.Time{}, err
 	}
-	t, _ := parseRFC3339(updatedAtStr)
+	t, _ := parseRFC3339(row.UpdatedAt)
 	return t, nil
 }
 
-func loadHeadTx(ctx context.Context, tx *sql.Tx, conversationID string) (conversation.EntryHead, bool, error) {
-	var activeLeafID sql.NullString
-	var version int64
-	var updatedAtStr string
-
-	err := tx.QueryRowContext(ctx,
-		"SELECT active_leaf_id, version, updated_at FROM conversation_entry_heads WHERE conversation_id = ?",
-		conversationID,
-	).Scan(&activeLeafID, &version, &updatedAtStr)
-
+func loadHeadTx(ctx context.Context, tx *gorm.DB, conversationID string) (conversation.EntryHead, bool, error) {
+	var row entryHeadRow
+	err := tx.WithContext(ctx).Where("conversation_id = ?", conversationID).Take(&row).Error
 	if err == nil {
-		updatedAt, _ := parseRFC3339(updatedAtStr)
-		var leaf *conversation.EntryID
-		if activeLeafID.Valid {
-			eid := conversation.EntryID(activeLeafID.String)
-			leaf = &eid
-		}
-		return conversation.EntryHead{
-			ConversationID: conversationID,
-			ActiveLeafID:   leaf,
-			Version:        version,
-			UpdatedAt:      updatedAt,
-		}, true, nil
+		return row.toHead(), true, nil
 	}
-
-	if err != sql.ErrNoRows {
+	if err != gorm.ErrRecordNotFound {
 		return conversation.EntryHead{}, false, err
 	}
 
 	// No head found in table: check if any nodes exist
-	var count int
-	if err := tx.QueryRowContext(ctx,
-		"SELECT COUNT(1) FROM conversation_entry_nodes WHERE conversation_id = ?",
-		conversationID,
-	).Scan(&count); err != nil {
+	var count int64
+	if err := tx.WithContext(ctx).Model(&entryNodeRow{}).
+		Where("conversation_id = ?", conversationID).Count(&count).Error; err != nil {
 		return conversation.EntryHead{}, false, err
 	}
 
@@ -79,7 +59,7 @@ func loadHeadTx(ctx context.Context, tx *sql.Tx, conversationID string) (convers
 	return conversation.EntryHead{}, false, nil
 }
 
-func lazyInitHeadTx(ctx context.Context, tx *sql.Tx, conversationID string, now time.Time) (conversation.EntryHead, error) {
+func lazyInitHeadTx(ctx context.Context, tx *gorm.DB, conversationID string, now time.Time) (conversation.EntryHead, error) {
 	head, exists, err := loadHeadTx(ctx, tx, conversationID)
 	if err != nil {
 		return conversation.EntryHead{}, err
@@ -88,11 +68,13 @@ func lazyInitHeadTx(ctx context.Context, tx *sql.Tx, conversationID string, now 
 		return head, nil
 	}
 
-	nowStr := now.UTC().Format(time.RFC3339Nano)
-	if _, err := tx.ExecContext(ctx,
-		"INSERT INTO conversation_entry_heads (conversation_id, active_leaf_id, version, updated_at) VALUES (?, NULL, 0, ?)",
-		conversationID, nowStr,
-	); err != nil {
+	row := entryHeadRow{
+		ConversationID: conversationID,
+		ActiveLeafID:   nil,
+		Version:        0,
+		UpdatedAt:      now.UTC().Format(time.RFC3339Nano),
+	}
+	if err := tx.WithContext(ctx).Create(&row).Error; err != nil {
 		return conversation.EntryHead{}, err
 	}
 
@@ -104,112 +86,79 @@ func lazyInitHeadTx(ctx context.Context, tx *sql.Tx, conversationID string, now 
 	}, nil
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanAndHydrateEntry(scanner rowScanner) (conversation.ConversationEntry, error) {
-	var id, convID, kind, payloadJSON, createdAtStr string
-	var parentID sql.NullString
-	var payloadVersion int
-	var appendIndex, depth int64
-
-	if err := scanner.Scan(
-		&id, &convID, &parentID, &kind, &payloadVersion, &payloadJSON, &appendIndex, &depth, &createdAtStr,
-	); err != nil {
-		return conversation.ConversationEntry{}, err
+func readPathTx(ctx context.Context, tx *gorm.DB, conversationID string, targetLeaf conversation.EntryID, maxEntries int) ([]conversation.ConversationEntry, error) {
+	var rows []entryNodeRow
+	result := tx.WithContext(ctx).Raw(entryPathSQL, conversationID, string(targetLeaf), maxEntries).Scan(&rows)
+	if result.Error != nil {
+		return nil, result.Error
 	}
 
-	msg, err := DecodeEntryMessage(payloadVersion, []byte(payloadJSON))
-	if err != nil {
-		return conversation.ConversationEntry{}, err
-	}
-
-	createdAt, err := parseRFC3339(createdAtStr)
-	if err != nil {
-		return conversation.ConversationEntry{}, fmt.Errorf("%w: corrupt created_at for entry %s: %v", conversation.ErrEntryCorrupt, id, err)
-	}
-
-	var pidPtr *conversation.EntryID
-	if parentID.Valid {
-		pid := conversation.EntryID(parentID.String)
-		pidPtr = &pid
-	}
-
-	return conversation.ConversationEntry{
-		ID:             conversation.EntryID(id),
-		ConversationID: convID,
-		ParentID:       pidPtr,
-		Kind:           conversation.EntryKind(kind),
-		PayloadVersion: payloadVersion,
-		Message:        msg,
-		AppendIndex:    appendIndex,
-		Depth:          depth,
-		CreatedAt:      createdAt,
-	}, nil
-}
-
-func readPathTx(ctx context.Context, tx *sql.Tx, conversationID string, targetLeaf conversation.EntryID, maxEntries int) ([]conversation.ConversationEntry, error) {
-	currentID := targetLeaf
+	path := make([]conversation.ConversationEntry, 0)
 	visited := make(map[conversation.EntryID]bool)
-	var pathReversed []conversation.ConversationEntry
-	var expectedDepth *int64
-
-	for {
-		if visited[currentID] {
-			return nil, fmt.Errorf("%w: cycle detected at entry %s", conversation.ErrEntryCorrupt, currentID)
-		}
-		visited[currentID] = true
-
-		row := tx.QueryRowContext(ctx, `
-			SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
-			FROM conversation_entry_nodes
-			WHERE conversation_id = ? AND id = ?
-		`, conversationID, string(currentID))
-
-		entry, err := scanAndHydrateEntry(row)
+	for _, row := range rows {
+		entry, err := row.toEntry()
 		if err != nil {
-			if err == sql.ErrNoRows {
-				return nil, fmt.Errorf("%w: entry %s not found in path", conversation.ErrEntryCorrupt, currentID)
-			}
 			return nil, err
 		}
-
-		if expectedDepth != nil && entry.Depth != *expectedDepth {
-			return nil, fmt.Errorf("%w: depth mismatch at entry %s: expected %d, got %d", conversation.ErrEntryCorrupt, entry.ID, *expectedDepth, entry.Depth)
+		if visited[entry.ID] {
+			return nil, fmt.Errorf("%w: cycle detected at entry %s", conversation.ErrEntryCorrupt, entry.ID)
 		}
-
-		pathReversed = append(pathReversed, entry)
-
-		if len(pathReversed) > maxEntries {
+		visited[entry.ID] = true
+		path = append(path, entry)
+		if len(path) > maxEntries {
 			return nil, fmt.Errorf("%w: path length exceeds max entries %d", conversation.ErrEntryCapacity, maxEntries)
 		}
+	}
+	if result.RowsAffected == 0 || len(path) == 0 {
+		return nil, fmt.Errorf("%w: entry %s not found in path", conversation.ErrEntryCorrupt, targetLeaf)
+	}
 
-		if entry.ParentID == nil {
-			if entry.Depth != 0 {
-				return nil, fmt.Errorf("%w: root entry %s has depth %d != 0", conversation.ErrEntryCorrupt, entry.ID, entry.Depth)
-			}
-			break
+	root := path[0]
+	if root.ParentID != nil {
+		return nil, fmt.Errorf("%w: entry %s not found in path", conversation.ErrEntryCorrupt, *root.ParentID)
+	}
+	if root.Depth != 0 {
+		return nil, fmt.Errorf("%w: root entry %s has depth %d != 0", conversation.ErrEntryCorrupt, root.ID, root.Depth)
+	}
+	for i := 1; i < len(path); i++ {
+		entry := path[i]
+		previous := path[i-1]
+		if entry.ParentID == nil || *entry.ParentID != previous.ID {
+			return nil, fmt.Errorf("%w: path parent mismatch at entry %s", conversation.ErrEntryCorrupt, entry.ID)
 		}
-
 		if entry.Depth == 0 {
 			return nil, fmt.Errorf("%w: non-root entry %s has depth 0", conversation.ErrEntryCorrupt, entry.ID)
 		}
-
-		parentExpDepth := entry.Depth - 1
-		expectedDepth = &parentExpDepth
-		currentID = *entry.ParentID
+		expectedDepth := previous.Depth + 1
+		if entry.Depth != expectedDepth {
+			return nil, fmt.Errorf("%w: depth mismatch at entry %s: expected %d, got %d", conversation.ErrEntryCorrupt, entry.ID, expectedDepth, entry.Depth)
+		}
 	}
-
-	n := len(pathReversed)
-	path := make([]conversation.ConversationEntry, n)
-	for i, e := range pathReversed {
-		path[n-1-i] = e
-	}
-
 	if err := conversation.ValidatePathConsistency(path); err != nil {
 		return nil, err
 	}
 
 	return path, nil
 }
+
+// Keep the recursive query and its maxEntries + 1 guard intact so that path
+// hydration and validation retain their original order and capacity errors.
+const entryPathSQL = `
+		WITH RECURSIVE entry_path AS (
+			SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at, 1 AS path_length
+			FROM conversation_entry_nodes
+			WHERE conversation_id = ? AND id = ?
+
+			UNION ALL
+
+			SELECT parent.id, parent.conversation_id, parent.parent_id, parent.kind, parent.payload_version,
+				parent.payload_json, parent.append_index, parent.depth, parent.created_at, entry_path.path_length + 1
+			FROM conversation_entry_nodes AS parent
+			JOIN entry_path ON parent.conversation_id = entry_path.conversation_id
+				AND parent.id = entry_path.parent_id
+			WHERE entry_path.path_length <= ?
+		)
+		SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
+		FROM entry_path
+		ORDER BY path_length DESC
+	`

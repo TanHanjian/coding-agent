@@ -110,7 +110,7 @@ func newChatHTTPIntegration(t *testing.T, executor *controlledExecutor) *chatHTT
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	if err := storage.Migrate(t.Context(), db.DB); err != nil {
+	if err := storage.Migrate(t.Context(), db); err != nil {
 		t.Fatal(err)
 	}
 

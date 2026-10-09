@@ -34,7 +34,11 @@
 
 本实施阶段属于产品 MVP，尚未完成功能交付。模型仍使用旧线性 History/旧摘要与当前 Run 内存工具循环；不接 Projection、compaction、artifact、Draft、通用持久化 RunEvent、SSE replay/resync/revision 或公共分支 API。
 
-切片 1 进度：已新增 `domain/agentrun` 领域模型/状态机/结构校验与测试，以及聊天 GenerationStore/RunRecorder/RecoveryStore 契约、Run/完整最终消息/token 与深拷贝测试。定向及 `cd backend && go test -count=1 ./...` 通过；race 因未启用 CGO 未运行。当前仍使用旧 TurnStore 生产路径，无 migration、具体 Recorder、事务 adapter 或运行装配改造；首条复合任务保持 unchecked。细节见技术设计 §13.6，完成切片 1 review 后再单独批准切片 2。
+切片 1 进度：已新增 `domain/agentrun` 领域模型/状态机/结构校验与测试，以及聊天 GenerationStore/RunRecorder/RecoveryStore 契约、Run/完整最终消息/token 与深拷贝测试。定向及 `cd backend && go test -count=1 ./...` 通过；race 因未启用 CGO 未运行。当前仍使用旧 TurnStore 生产路径，无 migration、具体 Recorder、事务 adapter 或运行装配改造；首条复合任务保持 unchecked。细节见技术设计 §13.6；切片 2 已单独批准并实现，记录如下。
+
+切片 2 进度：已提取 SQLite 包内 `appendTx`、`moveHeadTx`、`beginTurnTx`、`appendAssistantTextTx`、`finishAssistantTx`，只使用调用方 `*sql.Tx`，不嵌套事务。保留 Phase 1 校验/CAS 与旧聊天行为，公共方法在 Commit 失败时返回零值；新增跨 Entry/Message 组合提交、回滚、写入故障与 deferred FK Commit 故障测试。定向及后端全量测试、`go vet ./...` 通过；独立 review 发现的预编码校验旁路已移除并复核通过。race 因未启用 CGO 未运行，OpenSpec CLI 不可用。上述为切片 2 原始交付范围与验收记录；复合任务仍保持 unchecked。细节见技术设计 §13.7，后续切片按各自范围验收。
+
+本次 step2 回归收尾：已校正工作区 Run 终态重试夹具，显式构造同一个 user 后的未闭合 assistant tool call，并同事务回退 head/记录 failed Run 与旧 assistant。补充失败分支保留、错误版本/闭合点拒绝、新 client 从回退 head 继续、旧终态重试优先于新 active Run 的断言；补强 Run Commit 故障的 callback 成功与延迟外键错误断言。修正后定向测试、`cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过，两处 review 覆盖缺口修复后复核通过。工作区已有 `0009_agent_runs.sql` 与 BeginTurn adapter，按实施表归属切片 3，不能把它们计入切片 2 或据此标记完整 Run 生命周期交付。生产仍走旧 TurnStore，后续生命周期、Recorder、恢复与装配继续单独验收；race/CLI 的环境限制未解除。
 
 - [ ] Task: [MVP] 定义 reference-only Run contract、repository port 与新增 schema
   - Acceptance: 包含 base_entry_id/base_head_version、user/last/last_closed/final entry、head_version、legacy user/assistant IDs、client id、状态、脱敏错误及时间，无 body/raw tool JSON；FinalEntryID 仅 completed 存在。

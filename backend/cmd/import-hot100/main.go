@@ -31,7 +31,7 @@ func main() {
 		fatal(err)
 	}
 	defer db.Close()
-	if err := storage.Migrate(context.Background(), db.DB); err != nil {
+	if err := storage.Migrate(context.Background(), db); err != nil {
 		fatal(err)
 	}
 	repo := sqlite.NewQuestionRepository(db)

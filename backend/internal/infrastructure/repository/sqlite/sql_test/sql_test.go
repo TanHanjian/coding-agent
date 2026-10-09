@@ -19,7 +19,7 @@ func newSQLTestDB(t *testing.T) (*storage.DB, context.Context) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := storage.Migrate(ctx, db.DB); err != nil {
+	if err := storage.Migrate(ctx, db); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}

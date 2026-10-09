@@ -50,7 +50,7 @@ func main() {
 		os.Exit(1)
 	}
 	defer db.Close()
-	if err := storage.Migrate(context.Background(), db.DB); err != nil {
+	if err := storage.Migrate(context.Background(), db); err != nil {
 		slog.Error("run migrations", "error", err)
 		os.Exit(1)
 	}

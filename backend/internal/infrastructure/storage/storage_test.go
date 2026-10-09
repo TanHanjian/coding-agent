@@ -2,10 +2,11 @@ package storage
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"path/filepath"
 	"testing"
+
+	"gorm.io/gorm"
 )
 
 func testDB(t *testing.T) *DB {
@@ -14,7 +15,7 @@ func testDB(t *testing.T) *DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := Migrate(context.Background(), db.DB); err != nil {
+	if err := Migrate(context.Background(), db); err != nil {
 		db.Close()
 		t.Fatal(err)
 	}
@@ -24,15 +25,15 @@ func testDB(t *testing.T) *DB {
 
 func TestMigrateIsIdempotent(t *testing.T) {
 	db := testDB(t)
-	if err := Migrate(context.Background(), db.DB); err != nil {
+	if err := Migrate(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	var count int
 	if err := db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&count); err != nil {
 		t.Fatal(err)
 	}
-	if count != 8 {
-		t.Fatalf("expected eight migrations, got %d", count)
+	if count != 9 {
+		t.Fatalf("expected nine migrations, got %d", count)
 	}
 }
 
@@ -41,15 +42,13 @@ func TestWithinTxCommitAndRollback(t *testing.T) {
 	if _, err := db.Exec("CREATE TABLE values_test (value TEXT NOT NULL)"); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.WithinTx(context.Background(), func(_ context.Context, tx *sql.Tx) error {
-		_, err := tx.Exec("INSERT INTO values_test(value) VALUES (?)", "committed")
-		return err
+	if err := db.WithinTx(context.Background(), func(_ context.Context, tx *gorm.DB) error {
+		return tx.Exec("INSERT INTO values_test(value) VALUES (?)", "committed").Error
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if err := db.WithinTx(context.Background(), func(_ context.Context, tx *sql.Tx) error {
-		_, err := tx.Exec("INSERT INTO values_test(value) VALUES (?)", "rolled back")
-		if err != nil {
+	if err := db.WithinTx(context.Background(), func(_ context.Context, tx *gorm.DB) error {
+		if err := tx.Exec("INSERT INTO values_test(value) VALUES (?)", "rolled back").Error; err != nil {
 			return err
 		}
 		return errors.New("expected rollback")

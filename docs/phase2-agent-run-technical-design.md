@@ -561,7 +561,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 | --- | --- | --- |
 | 0 | 同步本设计与 OpenSpec、审查 Schema/状态/兼容契约 | 文档一致，不宣称代码完成 |
 | 1 | Run 类型、状态纯函数、GenerationStore/Recorder 骨架、fixtures | 已实现并通过编译/测试；旧代码未装配新路径，等待用户 review |
-| 2 | 提取包内 append/move/message Tx core | Phase 1 行为及测试不变，无嵌套事务 |
+| 2 | 提取包内 append/move/message Tx core | 已实现并通过全量测试与独立复核；Phase 1 行为不变，无嵌套事务，未接 Run |
 | 3 | migration、BeginTurn 与 pending Run | 幂等、active 索引、创建/Commit 故障回滚 |
 | 4 | MarkRunning、生命周期窗口、文本门禁、终态/补偿 | 注册失败不遗留可执行假成功、终态唯一 |
 | 5 | 完整消息聚合、工具政策、Recorder/Graph 接线 | 写入失败阻止工具/下一模型，声明顺序完整 |
@@ -615,7 +615,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - 重复恢复无副作用；旧 client返回中断结果，新 client创建新 Run。
 - 已执行工具不自动重放，失败分支不删除。
 
-实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。最初文档轮未实现或运行 Phase 2 Go 测试；当前切片 1 的检查见 §13.6，不代表其余 Run 集成检查已通过。
+实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。最初文档轮未实现或运行 Phase 2 Go 测试；当前切片 1、2 的检查见 §13.6、§13.7，不代表其余 Run 集成检查已通过。
 
 ### 13.5 本轮文档检查记录
 
@@ -632,7 +632,25 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - 契约 fixtures 只做编译检查，不提供成功假实现。具体 Recorder、串行化、持久化失败不推进 token 及 Executor 转发尚未实现。
 - 定向测试及 `cd backend && go test -count=1 ./...` 通过；独立 review 的版本下限和未启动终态引用问题已修复并补充反例测试。
 - `go test -race -count=1 ./internal/domain/agentrun/... ./internal/application/chat/...` 未能运行：当前环境未启用 CGO；不宣称 race 通过。OpenSpec CLI 不可用，未执行 CLI validate。
-- 不勾选包含 schema/adapter 的复合 OpenSpec 任务，不宣称 Phase 2 已完成。切片 2 及后续修改仍需用户批准。
+- 不勾选包含 schema/adapter 的复合 OpenSpec 任务，不宣称 Phase 2 已完成。切片 2 已另行批准并实现，记录见 §13.7；后续切片仍需用户批准。
+
+### 13.7 切片 2 实现与检查记录
+
+- 提取 `backend/internal/infrastructure/repository/sqlite/entry_tree_repository.go` 的包内 `appendTx`、`moveHeadTx`，以及 `chat_turn_store.go` 的 `beginTurnTx`、`appendAssistantTextTx`、`finishAssistantTx`。所有核心查询和写入只使用调用方传入的 `*sql.Tx`，不开连接、不嵌套事务。
+- 公共方法保留事务前输入校验，Tx core 也校验输入；Entry 的 clone、编码、安全策略、容量限制、路径检查、工具续接和 leaf/version CAS 保持。公共 `Append` 使用事务前快照并在 core 再次校验编码，不暴露可接收独立消息/JSON 的预编码写入入口。
+- Tx core 返回值在外层 Commit 前仅为未提交结果；任一 core 错误必须传播并中止整个事务。公共 `Append`、`MoveHead`、`BeginTurn`、`FinishAssistant` 在操作或 Commit 失败时返回零值。旧消息 ID/sequence/history、幂等优先、busy、文本累计及仅重复取消幂等的终态竞争行为不变。
+- 新增 `entry_tree_tx_test.go`、`chat_turn_tx_test.go`、`entry_chat_tx_test.go`：同事务连续追加/移动分支、消息对/文本/终态组合、跨 Entry 与 Message 原子提交、后续操作错误整体回滚、写入中途故障、deferred FK 的 Commit 失败及公共入口零结果。单连接池配合有限 context，并以 core 的 `db=nil` 验证仅使用传入事务。
+- 定向 SQLite 测试、`cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过。独立 review 发现预编码 helper 的校验旁路，已移除该入口；修正后全量回归及独立复核通过，未发现剩余问题。
+- `go test -race -count=1 ./internal/infrastructure/repository/sqlite/...` 未能运行：`go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`。OpenSpec CLI 不可用，未执行 CLI validate。
+- 切片 2 的交付范围仅为事务核心提取；该切片原始验收未包含 migration、Run 持久化/Recorder 或聊天接线。含未实现生命周期与生产装配的复合 OpenSpec 任务仍保持 unchecked；后续切片按其范围单独验收。
+
+本次回归修正与复核：
+
+- 修正工作区 `agent_run_store_test.go` 的终态重试夹具：同一个 Run 的 user 后追加未闭合 assistant tool call，再在同一个事务中回退 head 到该 user、持久化 failed Run 与旧 assistant 终态。保留 `LastEntryID=call`、`LastClosedEntryID=user`，`HeadVersion` 包含一次回退，并补齐 `StartedAt`；该夹具模拟后续生命周期事务，不表示生产失败收尾已实现。
+- 验证同 client 重试保留 Run/Message 身份与失败分支；错误回退版本、较早 user 和未闭合 call 作为闭合点均被拒绝，失败查询不改变 head/记录数量。新 client 从回退后的 user/version 创建新 Run，随后旧终态重试不改变新 active head，废弃工具分支仍保持原样。
+- 补强 Run 创建的 deferred FK Commit 故障测试：包内 `beginTurnTx` 成功并返回暂存结果、事务回调成功后，Commit 才返回 `FOREIGN KEY constraint failed`；公共接口返回零值，首次创建与已有 head 两种场景均全回滚。
+- 修正后的定向 Run 测试、`cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过。只读复核涵盖事务核心、组合测试、Run 创建/重试测试及工作区 `0009_agent_runs.sql` 和迁移测试；发现的两处测试覆盖缺口已补齐后再次复核。
+- 工作区已有 Run schema/BeginTurn adapter，属于实施表中的切片 3 内容，不能据此扩大切片 2 的完成声明。Run 生命周期、Recorder、工具控制路径、恢复与生产装配继续按后续切片验收；本次未切换生产路径。OpenSpec CLI 不可用，race 的既有 CGO 限制未解除。
 
 ## 14. 风险、回滚与未决实现细节
 

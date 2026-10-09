@@ -2,9 +2,10 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"fmt"
 	"time"
+
+	"gorm.io/gorm"
 
 	"interview-memory-agent/backend/internal/domain/conversation"
 	"interview-memory-agent/backend/internal/domain/domainerr"
@@ -60,7 +61,7 @@ func NewEntryTreeRepository(db *storage.DB, options EntryTreeOptions) (*EntryTre
 
 func (r *EntryTreeRepository) GetHead(ctx context.Context, conversationID string) (conversation.EntryHead, error) {
 	var head conversation.EntryHead
-	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
 		convUpdatedAt, err := checkConversationExists(ctx, tx, conversationID)
 		if err != nil {
 			return err
@@ -88,20 +89,17 @@ func (r *EntryTreeRepository) GetHead(ctx context.Context, conversationID string
 }
 
 func (r *EntryTreeRepository) Get(ctx context.Context, ref conversation.EntryRef) (conversation.ConversationEntry, error) {
-	row := r.db.QueryRowContext(ctx, `
-		SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
-		FROM conversation_entry_nodes
-		WHERE conversation_id = ? AND id = ?
-	`, ref.ConversationID, string(ref.ID))
-
-	entry, err := scanAndHydrateEntry(row)
-	if err == sql.ErrNoRows {
+	var row entryNodeRow
+	result := r.db.ORM(ctx).
+		Where("conversation_id = ? AND id = ?", ref.ConversationID, string(ref.ID)).
+		Take(&row)
+	if result.Error == gorm.ErrRecordNotFound {
 		return conversation.ConversationEntry{}, domainerr.ErrNotFound
 	}
-	if err != nil {
-		return conversation.ConversationEntry{}, err
+	if result.Error != nil {
+		return conversation.ConversationEntry{}, result.Error
 	}
-	return entry, nil
+	return row.toEntry()
 }
 
 func (r *EntryTreeRepository) ReadPath(ctx context.Context, query conversation.PathQuery) (conversation.EntryPath, error) {
@@ -110,7 +108,7 @@ func (r *EntryTreeRepository) ReadPath(ctx context.Context, query conversation.P
 	}
 
 	var result conversation.EntryPath
-	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
 		convUpdatedAt, err := checkConversationExists(ctx, tx, query.ConversationID)
 		if err != nil {
 			return err
@@ -172,47 +170,31 @@ func (r *EntryTreeRepository) ListChildren(ctx context.Context, query conversati
 	}
 
 	var page conversation.ChildrenPage
-	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
+	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
 		if _, err := checkConversationExists(ctx, tx, query.ConversationID); err != nil {
 			return err
 		}
 
-		var rows *sql.Rows
-		var err error
+		var rows []entryNodeRow
 		fetchLimit := limit + 1
-
+		children := tx.WithContext(ctx).
+			Where("conversation_id = ? AND append_index > ?", query.ConversationID, query.AfterIndex)
 		if query.ParentID == nil {
-			rows, err = tx.QueryContext(ctx, `
-				SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
-				FROM conversation_entry_nodes
-				WHERE conversation_id = ? AND parent_id IS NULL AND append_index > ?
-				ORDER BY append_index ASC
-				LIMIT ?
-			`, query.ConversationID, query.AfterIndex, fetchLimit)
+			children = children.Where("parent_id IS NULL")
 		} else {
-			rows, err = tx.QueryContext(ctx, `
-				SELECT id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
-				FROM conversation_entry_nodes
-				WHERE conversation_id = ? AND parent_id = ? AND append_index > ?
-				ORDER BY append_index ASC
-				LIMIT ?
-			`, query.ConversationID, string(*query.ParentID), query.AfterIndex, fetchLimit)
+			children = children.Where("parent_id = ?", string(*query.ParentID))
 		}
-		if err != nil {
+		if err := children.Order("append_index ASC").Limit(fetchLimit).Find(&rows).Error; err != nil {
 			return err
 		}
-		defer rows.Close()
 
 		var entries []conversation.ConversationEntry
-		for rows.Next() {
-			entry, err := scanAndHydrateEntry(rows)
+		for _, row := range rows {
+			entry, err := row.toEntry()
 			if err != nil {
 				return err
 			}
 			entries = append(entries, entry)
-		}
-		if err := rows.Err(); err != nil {
-			return err
 		}
 
 		if len(entries) > limit {
@@ -236,222 +218,268 @@ func (r *EntryTreeRepository) ListChildren(ctx context.Context, query conversati
 }
 
 func (r *EntryTreeRepository) Append(ctx context.Context, input conversation.AppendEntryInput) (conversation.AppendEntryResult, error) {
-	msgCopy := input.Message.Clone()
-	encodedJSON, err := EncodeEntryMessage(msgCopy)
+	msgCopy, _, err := r.prepareAppendMessage(input.Message)
 	if err != nil {
 		return conversation.AppendEntryResult{}, err
 	}
-	if len(encodedJSON) > r.maxPayloadBytes {
-		return conversation.AppendEntryResult{}, conversation.NewEntryError(
-			conversation.EntryErrCodeCapacity,
-			"",
-			fmt.Sprintf("payload size %d exceeds max bytes %d", len(encodedJSON), r.maxPayloadBytes),
-			conversation.ErrEntryCapacity,
-		)
-	}
-
+	// Keep the pre-transaction snapshot; appendTx validates every write entry.
+	input.Message = msgCopy
 	var result conversation.AppendEntryResult
-	err = r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := checkConversationExists(ctx, tx, input.ConversationID); err != nil {
-			return err
-		}
-
-		now := r.now().UTC()
-		head, err := lazyInitHeadTx(ctx, tx, input.ConversationID, now)
-		if err != nil {
-			return err
-		}
-
-		// Verify expected head
-		if head.Version != input.ExpectedHead.Version {
-			return domainerr.ErrConflict
-		}
-		if (head.ActiveLeafID == nil && input.ExpectedHead.ActiveLeafID != nil) ||
-			(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID == nil) ||
-			(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID != nil && *head.ActiveLeafID != *input.ExpectedHead.ActiveLeafID) {
-			return domainerr.ErrConflict
-		}
-
-		var parentPath []conversation.ConversationEntry
-		var depth int64
-		if head.ActiveLeafID != nil {
-			path, err := readPathTx(ctx, tx, input.ConversationID, *head.ActiveLeafID, r.maxPathEntries)
-			if err != nil {
-				return err
-			}
-			parentPath = path
-			depth = path[len(path)-1].Depth + 1
-		}
-
-		if depth+1 > int64(r.maxPathEntries) {
-			return conversation.NewEntryError(
-				conversation.EntryErrCodeCapacity,
-				"",
-				fmt.Sprintf("path depth %d exceeds max entries %d", depth+1, r.maxPathEntries),
-				conversation.ErrEntryCapacity,
-			)
-		}
-
-		if err := conversation.ValidateToolContinuation(parentPath, msgCopy); err != nil {
-			return err
-		}
-
-		var maxIndex sql.NullInt64
-		if err := tx.QueryRowContext(ctx, "SELECT MAX(append_index) FROM conversation_entry_nodes WHERE conversation_id = ?", input.ConversationID).Scan(&maxIndex); err != nil {
-			return err
-		}
-		var appendIndex int64 = 1
-		if maxIndex.Valid {
-			appendIndex = maxIndex.Int64 + 1
-		}
-
-		newID, err := r.newID()
-		if err != nil {
-			return err
-		}
-
-		var parentIDVal any
-		if head.ActiveLeafID != nil {
-			parentIDVal = string(*head.ActiveLeafID)
-		}
-
-		nowStr := now.Format(time.RFC3339Nano)
-		_, err = tx.ExecContext(ctx, `
-			INSERT INTO conversation_entry_nodes (
-				id, conversation_id, parent_id, kind, payload_version, payload_json, append_index, depth, created_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, string(newID), input.ConversationID, parentIDVal, string(conversation.EntryKindMessage), conversation.EntryPayloadV1, string(encodedJSON), appendIndex, depth, nowStr)
-		if err != nil {
-			return err
-		}
-
-		res, err := tx.ExecContext(ctx, `
-			UPDATE conversation_entry_heads
-			SET active_leaf_id = ?, version = version + 1, updated_at = ?
-			WHERE conversation_id = ?
-			  AND version = ?
-			  AND active_leaf_id IS ?;
-		`, string(newID), nowStr, input.ConversationID, input.ExpectedHead.Version, parentIDVal)
-		if err != nil {
-			return err
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return domainerr.ErrConflict
-		}
-
-		newHead := conversation.EntryHead{
-			ConversationID: input.ConversationID,
-			ActiveLeafID:   &newID,
-			Version:        head.Version + 1,
-			UpdatedAt:      now,
-		}
-
-		var pidPtr *conversation.EntryID
-		if head.ActiveLeafID != nil {
-			pid := *head.ActiveLeafID
-			pidPtr = &pid
-		}
-
-		newEntry := conversation.ConversationEntry{
-			ID:             newID,
-			ConversationID: input.ConversationID,
-			ParentID:       pidPtr,
-			Kind:           conversation.EntryKindMessage,
-			PayloadVersion: conversation.EntryPayloadV1,
-			Message:        msgCopy,
-			AppendIndex:    appendIndex,
-			Depth:          depth,
-			CreatedAt:      now,
-		}
-
-		result = conversation.AppendEntryResult{
-			Entry: newEntry,
-			Head:  newHead,
-		}
-		return nil
+	err = r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		var err error
+		result, err = r.appendTx(ctx, tx, input)
+		return err
 	})
-
 	if err != nil {
 		return conversation.AppendEntryResult{}, err
 	}
 	return result, nil
 }
 
+func (r *EntryTreeRepository) prepareAppendMessage(message conversation.EntryMessage) (conversation.EntryMessage, []byte, error) {
+	msgCopy := message.Clone()
+	encodedJSON, err := EncodeEntryMessage(msgCopy)
+	if err != nil {
+		return conversation.EntryMessage{}, nil, err
+	}
+	if len(encodedJSON) > r.maxPayloadBytes {
+		return conversation.EntryMessage{}, nil, conversation.NewEntryError(
+			conversation.EntryErrCodeCapacity,
+			"",
+			fmt.Sprintf("payload size %d exceeds max bytes %d", len(encodedJSON), r.maxPayloadBytes),
+			conversation.ErrEntryCapacity,
+		)
+	}
+	return msgCopy, encodedJSON, nil
+}
+
+// appendTx uses only the caller's transaction. Its result is provisional until
+// the owner commits; any error must abort the entire transaction.
+type appendSnapshot struct {
+	head       conversation.EntryHead
+	parentPath []conversation.ConversationEntry
+}
+
+func (r *EntryTreeRepository) appendTx(ctx context.Context, tx *gorm.DB, input conversation.AppendEntryInput) (conversation.AppendEntryResult, error) {
+	return r.appendTxWithSnapshot(ctx, tx, input, nil)
+}
+
+func (r *EntryTreeRepository) appendTxWithSnapshot(ctx context.Context, tx *gorm.DB, input conversation.AppendEntryInput, snapshot *appendSnapshot) (conversation.AppendEntryResult, error) {
+	msgCopy, encodedJSON, err := r.prepareAppendMessage(input.Message)
+	if err != nil {
+		return conversation.AppendEntryResult{}, err
+	}
+
+	var head conversation.EntryHead
+	var parentPath []conversation.ConversationEntry
+	now := r.now().UTC()
+	if snapshot == nil {
+		if _, err := checkConversationExists(ctx, tx, input.ConversationID); err != nil {
+			return conversation.AppendEntryResult{}, err
+		}
+
+		head, err = lazyInitHeadTx(ctx, tx, input.ConversationID, now)
+		if err != nil {
+			return conversation.AppendEntryResult{}, err
+		}
+		if head.ActiveLeafID != nil {
+			path, err := readPathTx(ctx, tx, input.ConversationID, *head.ActiveLeafID, r.maxPathEntries)
+			if err != nil {
+				return conversation.AppendEntryResult{}, err
+			}
+			parentPath = path
+		}
+	} else {
+		head = snapshot.head
+		parentPath = snapshot.parentPath
+	}
+
+	// Verify expected head. The update below repeats this check at write time.
+	if head.Version != input.ExpectedHead.Version {
+		return conversation.AppendEntryResult{}, domainerr.ErrConflict
+	}
+	if (head.ActiveLeafID == nil && input.ExpectedHead.ActiveLeafID != nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID == nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID != nil && *head.ActiveLeafID != *input.ExpectedHead.ActiveLeafID) {
+		return conversation.AppendEntryResult{}, domainerr.ErrConflict
+	}
+
+	var depth int64
+	if head.ActiveLeafID != nil {
+		if len(parentPath) == 0 || parentPath[len(parentPath)-1].ID != *head.ActiveLeafID {
+			return conversation.AppendEntryResult{}, fmt.Errorf("%w: append snapshot does not match head", conversation.ErrEntryCorrupt)
+		}
+		depth = parentPath[len(parentPath)-1].Depth + 1
+	}
+
+	if depth+1 > int64(r.maxPathEntries) {
+		return conversation.AppendEntryResult{}, conversation.NewEntryError(
+			conversation.EntryErrCodeCapacity,
+			"",
+			fmt.Sprintf("path depth %d exceeds max entries %d", depth+1, r.maxPathEntries),
+			conversation.ErrEntryCapacity,
+		)
+	}
+
+	if err := conversation.ValidateToolContinuation(parentPath, msgCopy); err != nil {
+		return conversation.AppendEntryResult{}, err
+	}
+
+	var maxIndex entryAppendIndexRow
+	if err := tx.WithContext(ctx).Model(&entryNodeRow{}).
+		Select("MAX(append_index) AS max_index").
+		Where("conversation_id = ?", input.ConversationID).Scan(&maxIndex).Error; err != nil {
+		return conversation.AppendEntryResult{}, err
+	}
+	var appendIndex int64 = 1
+	if maxIndex.MaxIndex != nil {
+		appendIndex = *maxIndex.MaxIndex + 1
+	}
+
+	newID, err := r.newID()
+	if err != nil {
+		return conversation.AppendEntryResult{}, err
+	}
+
+	var parentID *string
+	if head.ActiveLeafID != nil {
+		id := string(*head.ActiveLeafID)
+		parentID = &id
+	}
+
+	nowStr := now.Format(time.RFC3339Nano)
+	row := entryNodeRow{
+		ID:             string(newID),
+		ConversationID: input.ConversationID,
+		ParentID:       parentID,
+		Kind:           string(conversation.EntryKindMessage),
+		PayloadVersion: conversation.EntryPayloadV1,
+		PayloadJSON:    string(encodedJSON),
+		AppendIndex:    appendIndex,
+		Depth:          depth,
+		CreatedAt:      nowStr,
+	}
+	if err := tx.WithContext(ctx).Create(&row).Error; err != nil {
+		return conversation.AppendEntryResult{}, err
+	}
+
+	res := tx.WithContext(ctx).Model(&entryHeadRow{}).
+		Where("conversation_id = ? AND version = ? AND active_leaf_id IS ?", input.ConversationID, input.ExpectedHead.Version, parentID).
+		Updates(map[string]any{
+			"active_leaf_id": string(newID),
+			"version":        gorm.Expr("version + 1"),
+			"updated_at":     nowStr,
+		})
+	if res.Error != nil {
+		return conversation.AppendEntryResult{}, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return conversation.AppendEntryResult{}, domainerr.ErrConflict
+	}
+
+	newHead := conversation.EntryHead{
+		ConversationID: input.ConversationID,
+		ActiveLeafID:   &newID,
+		Version:        head.Version + 1,
+		UpdatedAt:      now,
+	}
+
+	var pidPtr *conversation.EntryID
+	if head.ActiveLeafID != nil {
+		pid := *head.ActiveLeafID
+		pidPtr = &pid
+	}
+
+	newEntry := conversation.ConversationEntry{
+		ID:             newID,
+		ConversationID: input.ConversationID,
+		ParentID:       pidPtr,
+		Kind:           conversation.EntryKindMessage,
+		PayloadVersion: conversation.EntryPayloadV1,
+		Message:        msgCopy,
+		AppendIndex:    appendIndex,
+		Depth:          depth,
+		CreatedAt:      now,
+	}
+
+	return conversation.AppendEntryResult{
+		Entry: newEntry,
+		Head:  newHead,
+	}, nil
+}
+
 func (r *EntryTreeRepository) MoveHead(ctx context.Context, input conversation.MoveHeadInput) (conversation.EntryHead, error) {
 	var newHead conversation.EntryHead
-	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		if _, err := checkConversationExists(ctx, tx, input.ConversationID); err != nil {
-			return err
-		}
-
-		now := r.now().UTC()
-		head, err := lazyInitHeadTx(ctx, tx, input.ConversationID, now)
-		if err != nil {
-			return err
-		}
-
-		if head.Version != input.ExpectedHead.Version {
-			return domainerr.ErrConflict
-		}
-		if (head.ActiveLeafID == nil && input.ExpectedHead.ActiveLeafID != nil) ||
-			(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID == nil) ||
-			(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID != nil && *head.ActiveLeafID != *input.ExpectedHead.ActiveLeafID) {
-			return domainerr.ErrConflict
-		}
-
-		if input.TargetID != nil {
-			targetPath, err := readPathTx(ctx, tx, input.ConversationID, *input.TargetID, r.maxPathEntries)
-			if err != nil {
-				return err
-			}
-			if !conversation.IsClosedBranchPoint(targetPath) {
-				return fmt.Errorf("%w: target entry %s is in an unclosed tool group", domainerr.ErrInvalidInput, *input.TargetID)
-			}
-		}
-
-		var oldLeafVal any
-		if head.ActiveLeafID != nil {
-			oldLeafVal = string(*head.ActiveLeafID)
-		}
-		var newLeafVal any
-		if input.TargetID != nil {
-			newLeafVal = string(*input.TargetID)
-		}
-
-		nowStr := now.Format(time.RFC3339Nano)
-		res, err := tx.ExecContext(ctx, `
-			UPDATE conversation_entry_heads
-			SET active_leaf_id = ?, version = version + 1, updated_at = ?
-			WHERE conversation_id = ?
-			  AND version = ?
-			  AND active_leaf_id IS ?;
-		`, newLeafVal, nowStr, input.ConversationID, input.ExpectedHead.Version, oldLeafVal)
-		if err != nil {
-			return err
-		}
-		affected, err := res.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if affected != 1 {
-			return domainerr.ErrConflict
-		}
-
-		newHead = conversation.EntryHead{
-			ConversationID: input.ConversationID,
-			ActiveLeafID:   input.TargetID,
-			Version:        head.Version + 1,
-			UpdatedAt:      now,
-		}
-		return nil
+	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		var err error
+		newHead, err = r.moveHeadTx(ctx, tx, input)
+		return err
 	})
-
 	if err != nil {
 		return conversation.EntryHead{}, err
 	}
 	return newHead, nil
+}
+
+// moveHeadTx follows the same commit/abort ownership contract as appendTx.
+func (r *EntryTreeRepository) moveHeadTx(ctx context.Context, tx *gorm.DB, input conversation.MoveHeadInput) (conversation.EntryHead, error) {
+	if _, err := checkConversationExists(ctx, tx, input.ConversationID); err != nil {
+		return conversation.EntryHead{}, err
+	}
+
+	now := r.now().UTC()
+	head, err := lazyInitHeadTx(ctx, tx, input.ConversationID, now)
+	if err != nil {
+		return conversation.EntryHead{}, err
+	}
+
+	if head.Version != input.ExpectedHead.Version {
+		return conversation.EntryHead{}, domainerr.ErrConflict
+	}
+	if (head.ActiveLeafID == nil && input.ExpectedHead.ActiveLeafID != nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID == nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID != nil && *head.ActiveLeafID != *input.ExpectedHead.ActiveLeafID) {
+		return conversation.EntryHead{}, domainerr.ErrConflict
+	}
+
+	if input.TargetID != nil {
+		targetPath, err := readPathTx(ctx, tx, input.ConversationID, *input.TargetID, r.maxPathEntries)
+		if err != nil {
+			return conversation.EntryHead{}, err
+		}
+		if !conversation.IsClosedBranchPoint(targetPath) {
+			return conversation.EntryHead{}, fmt.Errorf("%w: target entry %s is in an unclosed tool group", domainerr.ErrInvalidInput, *input.TargetID)
+		}
+	}
+
+	var oldLeafVal any
+	if head.ActiveLeafID != nil {
+		oldLeafVal = string(*head.ActiveLeafID)
+	}
+	var newLeafVal any
+	if input.TargetID != nil {
+		newLeafVal = string(*input.TargetID)
+	}
+
+	nowStr := now.Format(time.RFC3339Nano)
+	res := tx.WithContext(ctx).Model(&entryHeadRow{}).
+		Where("conversation_id = ? AND version = ? AND active_leaf_id IS ?", input.ConversationID, input.ExpectedHead.Version, oldLeafVal).
+		Updates(map[string]any{
+			"active_leaf_id": newLeafVal,
+			"version":        gorm.Expr("version + 1"),
+			"updated_at":     nowStr,
+		})
+	if res.Error != nil {
+		return conversation.EntryHead{}, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return conversation.EntryHead{}, domainerr.ErrConflict
+	}
+
+	return conversation.EntryHead{
+		ConversationID: input.ConversationID,
+		ActiveLeafID:   input.TargetID,
+		Version:        head.Version + 1,
+		UpdatedAt:      now,
+	}, nil
 }

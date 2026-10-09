@@ -2,11 +2,11 @@ package sqlite
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"gorm.io/gorm"
 
 	"interview-memory-agent/backend/internal/domain/question"
 	"interview-memory-agent/backend/internal/infrastructure/repository"
@@ -25,185 +25,117 @@ func NewQuestionRepository(db *storage.DB) *QuestionRepository {
 // Create writes the question and its tags atomically. Validation, IDs and
 // timestamps are supplied by the service layer.
 func (r *QuestionRepository) Create(ctx context.Context, record question.QuestionRecord) error {
-	return r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var difficulty any
-		if record.Difficulty != nil {
-			difficulty = string(*record.Difficulty)
-		}
-		_, err := tx.ExecContext(ctx, `
-			INSERT INTO questions (
-				id, title, type, body_markdown, difficulty, source_name,
-				source_url, is_archived, created_at, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			record.ID, record.Title, record.Type, record.BodyMarkdown, difficulty,
-			record.SourceName, record.SourceURL, record.IsArchived,
-			record.CreatedAt.UTC().Format(time.RFC3339Nano),
-			record.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		)
-		if err != nil {
+	return r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		row := questionToRow(record)
+		if err := tx.Create(&row).Error; err != nil {
 			return fmt.Errorf("insert question: %w", err)
 		}
-		for _, tag := range record.Tags {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO question_tags (question_id, tag) VALUES (?, ?)`,
-				record.ID, tag,
-			); err != nil {
-				return fmt.Errorf("insert question tag: %w", err)
-			}
-		}
-		return nil
+		return insertQuestionTags(tx, record.ID, record.Tags)
 	})
+}
+
+func insertQuestionTags(tx *gorm.DB, id string, tags []string) error {
+	if len(tags) == 0 {
+		return nil
+	}
+	rows := make([]questionTagRow, len(tags))
+	for i, tag := range tags {
+		rows[i] = questionTagRow{QuestionID: id, Tag: tag}
+	}
+	if err := tx.CreateInBatches(&rows, 100).Error; err != nil {
+		return fmt.Errorf("insert question tag: %w", err)
+	}
+	return nil
 }
 
 // Exists checks whether the question is present without exposing its domain model.
 func (r *QuestionRepository) Exists(ctx context.Context, id string) error {
-	var exists bool
-	if err := r.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM questions WHERE id = ?)`, id).Scan(&exists); err != nil {
-		return fmt.Errorf("check question exists: %w", err)
-	}
-	if !exists {
+	var row questionRow
+	result := r.db.ORM(ctx).Select("id").Where("id = ?", id).Take(&row)
+	if errors.Is(result.Error, gorm.ErrRecordNotFound) {
 		return question.ErrNotFound
+	}
+	if result.Error != nil {
+		return fmt.Errorf("check question exists: %w", result.Error)
 	}
 	return nil
 }
 
 func (r *QuestionRepository) GetByID(ctx context.Context, id string) (question.QuestionRecord, error) {
-	var record question.QuestionRecord
-	var createdAt, updatedAt string
-	err := r.db.QueryRowContext(ctx, `
-		SELECT id, title, type, body_markdown, difficulty, source_name, source_url, is_archived, created_at, updated_at
-		FROM questions
-		WHERE id = ?
-	`, id).Scan(
-		&record.ID,
-		&record.Title,
-		&record.Type,
-		&record.BodyMarkdown,
-		&record.Difficulty,
-		&record.SourceName,
-		&record.SourceURL,
-		&record.IsArchived,
-		&createdAt,
-		&updatedAt,
-	)
-	if err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
+	var row questionRow
+	if err := r.db.ORM(ctx).Where("id = ?", id).Take(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return question.QuestionRecord{}, question.ErrNotFound
 		}
 		return question.QuestionRecord{}, fmt.Errorf("get question by ID: %w", err)
 	}
-	record.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	record, err := row.record()
 	if err != nil {
-		return question.QuestionRecord{}, fmt.Errorf("parse question created_at: %w", err)
+		return question.QuestionRecord{}, err
 	}
-	record.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
-	if err != nil {
-		return question.QuestionRecord{}, fmt.Errorf("parse question updated_at: %w", err)
+	items := []question.QuestionRecord{record}
+	if err := loadQuestionTags(r.db.ORM(ctx), items); err != nil {
+		return question.QuestionRecord{}, err
 	}
-	rows, err := r.db.QueryContext(ctx, `
-	SELECT tag
-	FROM question_tags
-	WHERE question_id = ?
-	ORDER BY tag
-`, id)
-	if err != nil {
-		return question.QuestionRecord{}, fmt.Errorf("query question tags: %w", err)
-	}
-	defer rows.Close()
-
-	record.Tags = make([]string, 0)
-	for rows.Next() {
-		var tag string
-		if err := rows.Scan(&tag); err != nil {
-			return question.QuestionRecord{}, fmt.Errorf("scan question tag: %w", err)
-		}
-		record.Tags = append(record.Tags, tag)
-	}
-	if err := rows.Err(); err != nil {
-		return question.QuestionRecord{}, fmt.Errorf("iterate question tags: %w", err)
-	}
-	return record, nil
+	return items[0], nil
 }
 
-func (r *QuestionRepository) Update(ctx context.Context, record question.QuestionRecord) error {
-	return r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		var difficulty any
-		if record.Difficulty != nil {
-			difficulty = string(*record.Difficulty)
-		}
-		result, err := tx.ExecContext(ctx, `
-			UPDATE questions
-			SET title = ?, type = ?, body_markdown = ?, difficulty = ?, source_name = ?, source_url = ?, is_archived = ?, updated_at = ?
-			WHERE id = ?
-		`, record.Title, record.Type, record.BodyMarkdown, difficulty, record.SourceName, record.SourceURL, record.IsArchived,
-			record.UpdatedAt.UTC().Format(time.RFC3339Nano), record.ID)
-		if err != nil {
-			return fmt.Errorf("update question: %w", err)
-		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("check updated question: %w", err)
-		}
-		if affected == 0 {
-			return question.ErrNotFound
-		}
-		// A nil slice means the caller did not request a tag update.
-		if record.Tags == nil {
-			return nil
-		}
-		// A non-nil slice replaces the entire tag set; an empty slice clears it.
-		if _, err := tx.ExecContext(ctx,
-			`DELETE FROM question_tags WHERE question_id = ?`, record.ID,
-		); err != nil {
-			return fmt.Errorf("delete question tags: %w", err)
-		}
-		for _, tag := range record.Tags {
-			if _, err := tx.ExecContext(ctx,
-				`INSERT INTO question_tags (question_id, tag) VALUES (?, ?)`,
-				record.ID, tag,
-			); err != nil {
-				return fmt.Errorf("insert question tag: %w", err)
-			}
-		}
+// loadQuestionTags runs after the question query has consumed its rows, so it
+// also works with the storage layer's single connection.
+func loadQuestionTags(db *gorm.DB, items []question.QuestionRecord) error {
+	if len(items) == 0 {
 		return nil
-	})
-}
-
-func (r *QuestionRepository) SetArchived(ctx context.Context, id string, isArchived bool) error {
-	result, err := r.db.ExecContext(ctx, `
-		UPDATE questions
-		SET is_archived = ?, updated_at = ?
-		WHERE id = ?
-	`, isArchived, time.Now().UTC().Format(time.RFC3339Nano), id)
-	if err != nil {
-		return fmt.Errorf("set question archived: %w", err)
 	}
-	affected, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("check updated question: %w", err)
+	ids := make([]string, len(items))
+	indices := make(map[string]int, len(items))
+	for i := range items {
+		ids[i], indices[items[i].ID] = items[i].ID, i
+		items[i].Tags = make([]string, 0)
 	}
-	if affected == 0 {
-		return question.ErrNotFound
+	var tags []questionTagRow
+	if err := db.Where("question_id IN ?", ids).Order("tag").Find(&tags).Error; err != nil {
+		return fmt.Errorf("query question tags: %w", err)
+	}
+	for _, tag := range tags {
+		i := indices[tag.QuestionID]
+		items[i].Tags = append(items[i].Tags, tag.Tag)
 	}
 	return nil
 }
 
-func (r *QuestionRepository) DeletePermanent(ctx context.Context, id string) error {
-	return r.db.WithinTx(ctx, func(ctx context.Context, tx *sql.Tx) error {
-		// Foreign keys cascade to tags, answers, reviews and attachment metadata.
-		result, err := tx.ExecContext(ctx, `DELETE FROM questions WHERE id = ?`, id)
-		if err != nil {
-			return fmt.Errorf("delete question: %w", err)
+func (r *QuestionRepository) Update(ctx context.Context, record question.QuestionRecord) error {
+	return r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		row := questionToRow(record)
+		result := tx.Model(&questionRow{}).Where("id = ?", record.ID).Updates(map[string]any{
+			"title": row.Title, "type": row.Type, "body_markdown": row.BodyMarkdown,
+			"difficulty": row.Difficulty, "source_name": row.SourceName, "source_url": row.SourceURL,
+			"is_archived": row.IsArchived, "updated_at": row.UpdatedAt,
+		})
+		if err := requireORMAffected(result, "update question"); err != nil {
+			return err
 		}
-		affected, err := result.RowsAffected()
-		if err != nil {
-			return fmt.Errorf("check deleted question: %w", err)
+		// Nil preserves tags; every non-nil slice replaces the entire set.
+		if record.Tags == nil {
+			return nil
 		}
-		if affected == 0 {
-			return question.ErrNotFound
+		if err := tx.Where("question_id = ?", record.ID).Delete(&questionTagRow{}).Error; err != nil {
+			return fmt.Errorf("delete question tags: %w", err)
 		}
+		return insertQuestionTags(tx, record.ID, record.Tags)
+	})
+}
 
-		return nil
+func (r *QuestionRepository) SetArchived(ctx context.Context, id string, isArchived bool) error {
+	result := r.db.ORM(ctx).Model(&questionRow{}).Where("id = ?", id).Updates(map[string]any{
+		"is_archived": isArchived, "updated_at": formatTime(time.Now()),
+	})
+	return requireORMAffected(result, "set question archived")
+}
+
+func (r *QuestionRepository) DeletePermanent(ctx context.Context, id string) error {
+	return r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		// Foreign keys cascade to tags, answers, reviews and attachment metadata.
+		return requireORMAffected(tx.Where("id = ?", id).Delete(&questionRow{}), "delete question")
 	})
 }
 
@@ -212,135 +144,37 @@ func (r *QuestionRepository) Search(ctx context.Context, query question.Question
 	if err != nil {
 		return question.QuestionSearchResult{}, err
 	}
-
-	conditions := []string{"1 = 1"}
-	args := make([]any, 0)
-	if text := strings.TrimSpace(strings.ToLower(query.Text)); text != "" {
-		conditions = append(conditions, `(lower(q.title) LIKE ? OR lower(q.body_markdown) LIKE ? OR lower(q.source_name) LIKE ? OR lower(q.source_url) LIKE ? OR
-			EXISTS (SELECT 1 FROM answer_attempts aa WHERE aa.question_id = q.id AND (lower(aa.body_markdown) LIKE ? OR lower(aa.code) LIKE ?)) OR
-			EXISTS (SELECT 1 FROM mistake_reviews mr WHERE mr.question_id = q.id AND (lower(mr.mistake_category) LIKE ? OR lower(mr.review_markdown) LIKE ? OR lower(mr.correction_markdown) LIKE ? OR lower(mr.key_conclusions) LIKE ? OR lower(mr.ai_content_markdown) LIKE ?)))`)
-		pattern := "%" + text + "%"
-		args = append(args, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern, pattern)
+	filters := questionFilterScopes(query)
+	// Count and page each start from a fresh root session. Ordering and page
+	// bounds are only applied to the latter query.
+	newQuery := func() *gorm.DB {
+		return r.db.ORM(ctx).Session(&gorm.Session{NewDB: true}).Model(&questionRow{}).Scopes(filters...)
 	}
-	if len(query.Types) > 0 {
-		placeholders := make([]string, len(query.Types))
-		for i, value := range query.Types {
-			placeholders[i] = "?"
-			args = append(args, string(value))
-		}
-		conditions = append(conditions, "q.type IN ("+strings.Join(placeholders, ",")+")")
-	}
-	if len(query.Difficulties) > 0 {
-		placeholders := make([]string, len(query.Difficulties))
-		for i, value := range query.Difficulties {
-			placeholders[i] = "?"
-			args = append(args, string(value))
-		}
-		conditions = append(conditions, "q.difficulty IN ("+strings.Join(placeholders, ",")+")")
-	}
-	if len(query.Results) > 0 {
-		placeholders := make([]string, len(query.Results))
-		for i, value := range query.Results {
-			placeholders[i] = "?"
-			args = append(args, string(value))
-		}
-		conditions = append(conditions, "EXISTS (SELECT 1 FROM answer_attempts aa WHERE aa.question_id = q.id AND aa.result IN ("+strings.Join(placeholders, ",")+"))")
-	}
-	for _, tag := range query.Tags {
-		if tag = strings.TrimSpace(tag); tag != "" {
-			conditions = append(conditions, "EXISTS (SELECT 1 FROM question_tags qt WHERE qt.question_id = q.id AND qt.tag = ?)")
-			args = append(args, tag)
-		}
-	}
-	if source := strings.TrimSpace(query.Source); source != "" {
-		conditions = append(conditions, "(q.source_name = ? OR q.source_url = ?)")
-		args = append(args, source, source)
-	}
-	if query.Archived != nil {
-		conditions = append(conditions, "q.is_archived = ?")
-		args = append(args, *query.Archived)
-	} else {
-		conditions = append(conditions, "q.is_archived = 0")
-	}
-	if query.HasMistakes != nil {
-		expr := "EXISTS"
-		if !*query.HasMistakes {
-			expr = "NOT EXISTS"
-		}
-		conditions = append(conditions, expr+" (SELECT 1 FROM mistake_reviews mr WHERE mr.question_id = q.id)")
-	}
-	where := strings.Join(conditions, " AND ")
-	var total int
-	if err := r.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM questions q WHERE "+where, args...).Scan(&total); err != nil {
+	var total int64
+	if err := newQuery().Count(&total).Error; err != nil {
 		return question.QuestionSearchResult{}, fmt.Errorf("count questions: %w", err)
 	}
-
-	sortColumns := map[string]string{"created_at": "q.created_at", "updated_at": "q.updated_at", "title": "q.title", "difficulty": "q.difficulty", "type": "q.type"}
-	sortColumn := sortColumns[query.SortBy]
-	if sortColumn == "" {
-		sortColumn = "q.updated_at"
-	}
-	direction := "DESC"
-	if strings.EqualFold(query.SortDirection, "asc") {
-		direction = "ASC"
-	}
 	offset := (query.Page - 1) * query.PageSize
-	args = append(args, query.PageSize, offset)
-	rows, err := r.db.QueryContext(ctx, `SELECT q.id, q.title, q.type, q.body_markdown, q.difficulty, q.source_name, q.source_url, q.is_archived, q.created_at, q.updated_at FROM questions q WHERE `+where+` ORDER BY `+sortColumn+` `+direction+`, q.id `+direction+` LIMIT ? OFFSET ?`, args...)
-	if err != nil {
+	var rows []questionRow
+	if err := newQuery().Scopes(questionOrderScope(query.SortBy, query.SortDirection)).
+		Limit(query.PageSize).Offset(offset).Find(&rows).Error; err != nil {
 		return question.QuestionSearchResult{}, fmt.Errorf("search questions: %w", err)
 	}
-	defer rows.Close()
-	items := make([]question.QuestionRecord, 0)
-	for rows.Next() {
-		var item question.QuestionRecord
-		var createdAt, updatedAt string
-		if err := rows.Scan(&item.ID, &item.Title, &item.Type, &item.BodyMarkdown, &item.Difficulty, &item.SourceName, &item.SourceURL, &item.IsArchived, &createdAt, &updatedAt); err != nil {
-			return question.QuestionSearchResult{}, fmt.Errorf("scan searched question: %w", err)
-		}
-		item.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	items := make([]question.QuestionRecord, 0, len(rows))
+	for _, row := range rows {
+		item, err := row.record()
 		if err != nil {
-			return question.QuestionSearchResult{}, fmt.Errorf("parse searched question created_at: %w", err)
-		}
-		item.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
-		if err != nil {
-			return question.QuestionSearchResult{}, fmt.Errorf("parse searched question updated_at: %w", err)
+			return question.QuestionSearchResult{}, err
 		}
 		items = append(items, item)
 	}
-	if err := rows.Err(); err != nil {
-		return question.QuestionSearchResult{}, fmt.Errorf("iterate searched questions: %w", err)
+	if err := loadQuestionTags(r.db.ORM(ctx), items); err != nil {
+		return question.QuestionSearchResult{}, err
 	}
-	// Release the single database connection before querying tags.
-	if err := rows.Close(); err != nil {
-		return question.QuestionSearchResult{}, fmt.Errorf("close searched questions: %w", err)
-	}
-	if len(items) > 0 {
-		placeholders := make([]string, len(items))
-		ids := make([]any, len(items))
-		indices := make(map[string]int, len(items))
-		for i := range items {
-			placeholders[i], ids[i], indices[items[i].ID] = "?", items[i].ID, i
-			items[i].Tags = make([]string, 0)
-		}
-		tags, err := r.db.QueryContext(ctx, `SELECT question_id, tag FROM question_tags WHERE question_id IN (`+strings.Join(placeholders, ",")+`) ORDER BY tag`, ids...)
-		if err != nil {
-			return question.QuestionSearchResult{}, fmt.Errorf("query search tags: %w", err)
-		}
-		defer tags.Close()
-		for tags.Next() {
-			var id, tag string
-			if err := tags.Scan(&id, &tag); err != nil {
-				return question.QuestionSearchResult{}, fmt.Errorf("scan search tag: %w", err)
-			}
-			i := indices[id]
-			items[i].Tags = append(items[i].Tags, tag)
-		}
-		if err := tags.Err(); err != nil {
-			return question.QuestionSearchResult{}, fmt.Errorf("iterate search tags: %w", err)
-		}
-	}
-	return question.QuestionSearchResult{Items: items, Page: query.Page, PageSize: query.PageSize, Total: total, HasNext: offset+len(items) < total}, nil
+	return question.QuestionSearchResult{
+		Items: items, Page: query.Page, PageSize: query.PageSize,
+		Total: int(total), HasNext: offset+len(items) < int(total),
+	}, nil
 }
 
 func (r *QuestionRepository) GetDetail(ctx context.Context, id string) (question.QuestionDetail, error) {

@@ -19,7 +19,7 @@ func TestHealthHandler(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer db.Close()
-	if err := storage.Migrate(context.Background(), db.DB); err != nil {
+	if err := storage.Migrate(context.Background(), db); err != nil {
 		t.Fatal(err)
 	}
 	handler := httpx.WithRequestID(healthHandler(db))
