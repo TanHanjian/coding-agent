@@ -87,21 +87,38 @@ func main() {
 	answerService := answer.NewService(answer.Dependencies{Store: answerRepository, Questions: questionRepository})
 	reviewService := review.NewService(review.Dependencies{Store: reviewRepository, Answers: answerRepository, Questions: questionRepository})
 	conversationService := conversation.NewService(conversation.Dependencies{Conversations: conversationRepository, Messages: messageRepository})
+	agentRunStore, err := sqlite.NewAgentRunRepository(db)
+	if err != nil {
+		slog.Error("create agent run store", "error", err)
+		os.Exit(1)
+	}
 	chatExecutor, err := newChatExecutor(context.Background(), cfg, interview.ToolDependencies{
 		QuestionSearcher:      questionService,
 		QuestionContextReader: questionService,
-	}, promptProvider)
+	}, agentRunStore, promptProvider)
 	if err != nil {
 		slog.Error("configure chat executor", "error", err)
 		closeCozeLoop(cozeLoopClient)
 		os.Exit(1)
 	}
-	chatService, err := chat.NewSkeletonService(chat.Dependencies{
+	// Recover any interrupted runs from previous crashes
+	recoveryResult, err := agentRunStore.RecoverInterrupted(context.Background())
+	if err != nil {
+		slog.Error("recover interrupted runs", "error", err)
+		os.Exit(1)
+	}
+	if recoveryResult.InterruptedRuns > 0 || recoveryResult.LegacyOnlyMessages > 0 {
+		slog.Info("recovered interrupted state",
+			"interrupted_runs", recoveryResult.InterruptedRuns,
+			"legacy_only_messages", recoveryResult.LegacyOnlyMessages)
+	}
+
+	chatService, err := chat.NewRunService(chat.RunDependencies{
 		Executor:    chatExecutor,
 		Registry:    chat.NewMemoryGenerationRegistry(),
 		Hub:         chat.NewMemoryGenerationHub(),
 		RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
-		Store:       sqlite.NewChatTurnRepository(db),
+		Store:       agentRunStore,
 	})
 	if err != nil {
 		slog.Error("configure chat service", "error", err)
@@ -138,9 +155,12 @@ func closeCozeLoop(client *cozeloopinfra.Client) {
 
 // newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
 // 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
-func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
+func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, projectionReader conversation.ProjectionReader, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
 	if err := cfg.ValidateForChat(); err != nil {
 		return nil, fmt.Errorf("validate chat configuration: %w", err)
+	}
+	if projectionReader == nil {
+		return nil, fmt.Errorf("configure chat context: projection reader is required")
 	}
 	chatModel, err := agentopenai.NewChatModel(ctx, cfg.OpenAI)
 	if err != nil {
@@ -160,7 +180,7 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 	}
 	chatExecutor, err := eino.NewExecutor(
 		runtimeBuilder,
-		eino.WithContextManager(agentcontext.NewManager()),
+		eino.WithContextManager(agentcontext.NewManager(agentcontext.WithProjectionReader(projectionReader))),
 		eino.WithGraphDebugLogging(cfg.AgentDebug),
 	)
 	if err != nil {

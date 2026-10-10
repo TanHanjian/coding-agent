@@ -33,7 +33,7 @@
 |---|---|---|
 | Phase 1 | MVP | Entry Tree 与安全白名单基础代码/测试已实现；未接入聊天，无 compaction/artifact/Draft |
 | Phase 2 | MVP | Run 领域模型与聊天契约骨架已实现；ChatTurn 原子集成、安全完整消息持久化、取消/恢复和装配仍待实现，模型仍读旧线性历史 |
-| Phase 3 | MVP | Context Projection、适配器边界、旧历史兼容；全部待实现 |
+| Phase 3 | MVP | Context Projection 已批准实施：ContextManager 统一快照读取、Run base 边界与 legacy 水位；采用 safe-tool-facts-v1 整组安全事实文本降级；验收中 |
 | Phase 4 | Phase 2 | compaction；核心 Run/Projection 之后实施 |
 | Optional follow-up | Phase 2 | artifact/TTL；核心 Run/Projection 之后独立批准，不属于 Run 交付 |
 | Phase 5 | MVP / Phase 2 | 按对应能力验收兼容、显式历史迁移与旧路径清理；不把 Phase 2 核心双写推迟到此阶段 |

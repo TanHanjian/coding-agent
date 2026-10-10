@@ -15,8 +15,8 @@ import (
 	"interview-memory-agent/backend/internal/infrastructure/storage"
 )
 
-// AgentRunRepository implements only atomic turn creation in this slice. It is
-// deliberately not a GenerationStore until the Run lifecycle is implemented.
+// AgentRunRepository owns atomic Run, Entry Tree and legacy Message writes.
+// The legacy ChatTurnRepository remains a separate, unchanged production path.
 type AgentRunRepository struct {
 	db    *storage.DB
 	tree  *EntryTreeRepository
@@ -281,6 +281,14 @@ func (r *AgentRunRepository) validateRunReferencesTx(ctx context.Context, tx *go
 	if run.HeadVersion-run.BaseHeadVersion != advances {
 		return conversation.Message{}, conversation.Message{}, corruptRun("run head version disagrees with its facts")
 	}
+	// Tool results are committed as a complete group. An active waiting Run
+	// can only point at its assistant call, never at a partial result group.
+	if run.Status == agentrun.StatusWaitingTool {
+		last := path[len(path)-1].Message
+		if last.Role != conversation.EntryRoleAssistant || last.StopReason != conversation.EntryStopTools {
+			return conversation.Message{}, conversation.Message{}, corruptRun("waiting run does not end at an assistant call")
+		}
+	}
 	if run.Status == agentrun.StatusCompleted {
 		last := path[len(path)-1].Message
 		if last.Role != conversation.EntryRoleAssistant || last.StopReason != conversation.EntryStopNormal {
@@ -292,4 +300,100 @@ func (r *AgentRunRepository) validateRunReferencesTx(ctx context.Context, tx *go
 
 func sameEntryID(a, b *conversation.EntryID) bool {
 	return (a == nil && b == nil) || (a != nil && b != nil && *a == *b)
+}
+
+// RecoverInterrupted finds all active Runs and transitions them to failed state,
+// then finds all streaming assistant messages not covered by an active Run and
+// transitions them to failed state. Returns counts of recovered items.
+func (r *AgentRunRepository) RecoverInterrupted(ctx context.Context) (chat.RecoveryResult, error) {
+	var result chat.RecoveryResult
+	err := r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		// Find all active runs (pending, running, waiting_tool)
+		var activeRuns []runRow
+		if err := tx.WithContext(ctx).Where("status IN ?",
+			[]agentrun.Status{agentrun.StatusPending, agentrun.StatusRunning, agentrun.StatusWaitingTool}).
+			Find(&activeRuns).Error; err != nil {
+			return fmt.Errorf("query active runs: %w", err)
+		}
+
+		// Transition each active run to failed
+		for _, row := range activeRuns {
+			run, err := row.toRun()
+			if err != nil {
+				return fmt.Errorf("decode active run %s: %w", row.ID, err)
+			}
+			
+			// Mark the run as failed with interrupted error
+			run.Status = agentrun.StatusFailed
+			run.ErrorCode = "interrupted"
+			now := r.tree.now().UTC()
+			run.FinishedAt = &now
+			
+			if err := agentrun.ValidateRun(run); err != nil {
+				return fmt.Errorf("validate recovered run %s: %w", run.ID, err)
+			}
+			
+			updatedRow := runToRow(run)
+			if err := tx.WithContext(ctx).Model(&runRow{}).Where("id = ?", run.ID).
+				Updates(map[string]interface{}{
+					"status":      updatedRow.Status,
+					"error_code":  updatedRow.ErrorCode,
+					"finished_at": updatedRow.FinishedAt,
+				}).Error; err != nil {
+				return fmt.Errorf("update run %s to failed: %w", run.ID, err)
+			}
+			
+			// Also mark the associated assistant message as failed
+			if err := tx.WithContext(ctx).Model(&messageRow{}).
+				Where("id = ? AND conversation_id = ?", run.AssistantMessageID, run.ConversationID).
+				Updates(map[string]interface{}{
+					"status":        conversation.MessageStatusFailed,
+					"error_code":    "interrupted",
+					"error_message": "Message was interrupted and recovered at startup",
+				}).Error; err != nil {
+				return fmt.Errorf("update assistant message %s to failed: %w", run.AssistantMessageID, err)
+			}
+			
+			result.InterruptedRuns++
+		}
+
+		// Find streaming assistant messages not covered by any run (legacy-only)
+		var streamingMessages []messageRow
+		if err := tx.WithContext(ctx).
+			Where("role = ? AND status = ?", conversation.MessageRoleAssistant, conversation.MessageStatusStreaming).
+			Find(&streamingMessages).Error; err != nil {
+			return fmt.Errorf("query streaming messages: %w", err)
+		}
+
+		for _, msg := range streamingMessages {
+			// Check if this message is covered by a run
+			var runCount int64
+			if err := tx.WithContext(ctx).Model(&runRow{}).
+				Where("assistant_message_id = ?", msg.ID).
+				Count(&runCount).Error; err != nil {
+				return fmt.Errorf("check run coverage for message %s: %w", msg.ID, err)
+			}
+			
+			// If no run covers this message, it's a legacy-only streaming message
+			if runCount == 0 {
+				if err := tx.WithContext(ctx).Model(&messageRow{}).
+					Where("id = ?", msg.ID).
+					Updates(map[string]interface{}{
+						"status":        conversation.MessageStatusFailed,
+						"error_code":    "interrupted",
+						"error_message": "Legacy message was interrupted and recovered at startup",
+					}).Error; err != nil {
+					return fmt.Errorf("update legacy message %s to failed: %w", msg.ID, err)
+				}
+				result.LegacyOnlyMessages++
+			}
+		}
+
+		return nil
+	})
+	
+	if err != nil {
+		return chat.RecoveryResult{}, err
+	}
+	return result, nil
 }

@@ -9,15 +9,16 @@ import (
 	"fmt"
 
 	chat "interview-memory-agent/backend/internal/application/chat"
+	"interview-memory-agent/backend/internal/domain/conversation"
 )
 
 var ErrContextManagerOrchestrationNotImplemented = errors.New("agent context: manager orchestration is not implemented")
 
-// Manager is the concrete top-level ContextManager. Its orchestration body is
-// deliberately still a skeleton: the current fallback preserves the existing
-// full-history behavior until the lower-level policies are implemented.
+// Manager assembles persisted projections and retains the controlled legacy
+// fallback. Budget and summary orchestration remain reserved for a later phase.
 type Manager struct {
 	fallback           chat.ContextManager
+	projectionReader   conversation.ProjectionReader
 	budgetPolicy       BudgetPolicy
 	tokenEstimator     TokenEstimator
 	historySelector    HistorySelector
@@ -26,6 +27,11 @@ type Manager struct {
 }
 
 type Option func(*Manager)
+
+// WithProjectionReader enables persisted, provenance-preserving history.
+func WithProjectionReader(reader conversation.ProjectionReader) Option {
+	return func(manager *Manager) { manager.projectionReader = reader }
+}
 
 // WithBudgetPolicy reserves the budget-policy injection point.
 func WithBudgetPolicy(policy BudgetPolicy) Option {
@@ -77,12 +83,37 @@ func NewManager(options ...Option) *Manager {
 	return manager
 }
 
-// Prepare is the single entry point used by the Agent executor. When all
-// orchestration seams are present it follows the top-down pipeline; otherwise
-// it preserves the current pass-through behavior.
+// Prepare reads and converts persisted history before policy orchestration.
+// Without a reader, only non-persisted requests can use the legacy fallback.
 func (m *Manager) Prepare(ctx context.Context, input chat.ContextInput) (chat.PreparedContext, error) {
 	if m == nil || m.fallback == nil {
 		return chat.PreparedContext{}, errors.New("agent context: manager fallback is required")
+	}
+	if m.projectionReader != nil {
+		if m.pipelineReady() {
+			return chat.PreparedContext{}, errors.New("agent context: projection-aware policy pipeline is not implemented")
+		}
+		snapshot, err := m.projectionReader.ReadProjection(ctx, conversation.ProjectionQuery{
+			ConversationID: input.Conversation.ID,
+			RunID:          string(input.RunID),
+			UserMessageID:  input.UserMessage.ID,
+		})
+		if err != nil {
+			return chat.PreparedContext{}, fmt.Errorf("read context projection: %w", err)
+		}
+		history, err := ProjectSnapshot(snapshot)
+		if err != nil {
+			return chat.PreparedContext{}, fmt.Errorf("project context history: %w", err)
+		}
+		return chat.PreparedContext{
+			ModelHistory:     conversation.CloneContextMessages(history),
+			Query:            input.UserMessage.Content,
+			InterviewContext: input.InterviewContext,
+			Metadata:         chat.ContextMetadata{HistoryIncluded: len(history), ProjectionUsed: true, LegacyBeforeSequence: snapshot.LegacyBeforeSequence},
+		}, nil
+	}
+	if input.RunID != "" {
+		return chat.PreparedContext{}, errors.New("agent context: projection reader is required for a persisted run")
 	}
 	if !m.pipelineReady() {
 		return m.fallback.Prepare(ctx, input)

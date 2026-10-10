@@ -16,6 +16,7 @@ type MemoryGenerationHub struct {
 }
 
 type memoryGeneration struct {
+	owner          *memoryHubLease
 	content        string
 	status         conversation.MessageStatus
 	eventSummaries []GenerationEvent
@@ -74,7 +75,7 @@ func (h *MemoryGenerationHub) Complete(message conversation.Message) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	run := h.runs[message.ID]
-	if run == nil {
+	if run == nil || run.owner != nil {
 		return
 	}
 	run.content = message.Content
@@ -180,6 +181,7 @@ type MemoryGenerationRegistry struct {
 }
 
 type generationControl struct {
+	owner  *memoryRegistryLease
 	cancel context.CancelFunc
 	done   chan struct{}
 }
@@ -226,7 +228,7 @@ func (r *MemoryGenerationRegistry) Cancel(assistantMessageID string) (<-chan str
 func (r *MemoryGenerationRegistry) Complete(assistantMessageID string) {
 	r.mu.Lock()
 	run := r.runs[assistantMessageID]
-	if run != nil {
+	if run != nil && run.owner == nil {
 		delete(r.runs, assistantMessageID)
 		close(run.done)
 	}
@@ -252,7 +254,7 @@ func NewDetachedRunContextFactory(root context.Context, timeout time.Duration) *
 }
 
 func (f *DetachedRunContextFactory) New() (context.Context, context.CancelFunc) {
-	base := context.WithoutCancel(f.root)
+	base := f.root
 	if f.timeout <= 0 {
 		return context.WithCancel(base)
 	}

@@ -72,14 +72,25 @@ func TestMemoryGenerationRegistryCancelsOnce(t *testing.T) {
 	}
 }
 
-func TestDetachedRunContextIgnoresSourceCancellation(t *testing.T) {
-	source, stopSource := context.WithCancel(context.Background())
-	factory := NewDetachedRunContextFactory(source, time.Minute)
+func TestDetachedRunContextInheritsServiceRootCancellation(t *testing.T) {
+	root, stopRoot := context.WithCancel(context.Background())
+	factory := NewDetachedRunContextFactory(root, time.Minute)
 	runContext, stopRun := factory.New()
-	stopSource()
-	if runContext.Err() != nil {
-		t.Fatalf("request cancellation must not cancel generation: %v", runContext.Err())
+	defer stopRun()
+	request, stopRequest := context.WithCancel(root)
+	stopRequest()
+	if request.Err() != context.Canceled || runContext.Err() != nil {
+		t.Fatal("browser cancellation must not cancel generation")
 	}
+	stopRoot()
+	if runContext.Err() != context.Canceled {
+		t.Fatalf("service shutdown must cancel generation: %v", runContext.Err())
+	}
+}
+
+func TestDetachedRunContextSupportsExplicitCancellation(t *testing.T) {
+	factory := NewDetachedRunContextFactory(context.Background(), time.Minute)
+	runContext, stopRun := factory.New()
 	stopRun()
 	if runContext.Err() != context.Canceled {
 		t.Fatalf("explicit generation cancellation must win, got %v", runContext.Err())

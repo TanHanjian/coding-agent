@@ -2,7 +2,7 @@
 
 ## Scope
 
-本规范是产品 MVP、实施 Phase 2 的契约。切片 1 已实现 Run 领域模型/状态机与聊天契约骨架，但具体持久化、原子 ChatTurn 集成、恢复或完整工具接线尚未实现；Phase 1 树基础与当前契约测试不能替代这些验收。实施 Phase 2 模型 MUST 继续读取旧线性 History；切换 Projection 属于实施 Phase 3。参见 [design](../../design.md)、[tasks](../../tasks.md) 和 [Entry Tree spec](../entry-tree/spec.md)。
+本规范是产品 MVP、实施 Phase 2 的契约。切片 1/2 已有实现与验收记录；切片 3 的 Run schema、active 约束与原子 BeginTurn 已落地并通过定向复核。完整生命周期、具体 Recorder、真实 Graph 工具接线、恢复和生产装配仍待实现；Phase 1 树基础与当前契约测试不能替代这些验收。实施 Phase 2 模型 MUST 继续读取旧线性 History；切换 Projection 属于实施 Phase 3。参见 [design](../../design.md)、[tasks](../../tasks.md) 和 [Entry Tree spec](../entry-tree/spec.md)。
 
 ## Requirements
 
@@ -162,13 +162,19 @@ Run MUST 支持 pending/running/waiting_tool/completed/failed/cancelled，并原
 
 ### Requirement: [MVP] Compensate a failed start registration
 
-BeginTurn 已提交但尚未启动 generation goroutine 时，Hub/Registry 注册、pending→running 或启动准备失败 MUST 触发补偿，将 Run 与 legacy streaming assistant 原子收敛为 failed，并按同一闭合 head 策略处理。系统 MUST 在注册及 running 状态提交成功后才执行模型；Start 注册窗口与 Cancel 信号操作 MUST 串行化，等待终态 MUST 不持该窗口锁。系统 MUST 清理本次内存资源且不得留假 streaming/busy；补偿失败 MUST 明确报错，不返回成功。
+BeginTurn 已提交但尚未启动 generation goroutine 时，Hub/Registry 注册、pending→running 或启动准备失败，系统 MUST 先确认该 Run 是本次新建、尚未启动且没有其他资源所有者。能证明这些条件时，系统 MUST 补偿，将 Run 与 legacy streaming assistant 原子收敛为 failed，并按同一闭合 head 策略处理；尚未取得资源本身不阻止补偿，但不能将所有权不明视为没有其他所有者。若发现已有执行者、资源已被他人占用，或无法证明所有权，系统 MUST 返回明确 conflict，不修改已有执行者的 Run、句柄或快照。系统 MUST 在注册及 running 状态提交成功后才执行模型；Start 注册窗口与 Cancel 信号操作 MUST 串行化，等待终态 MUST 不持该窗口锁。清理 MUST 仅释放本次实际取得的内存资源，不得覆盖/清理他人资源。可补偿分支 MUST 不遗留假 streaming/busy；补偿失败 MUST 明确报错，不返回成功、不广播终态。冲突或补偿失败保留的 active 记录 MUST 受后续排他恢复约束，不得据此重建执行。
 
 #### Scenario: Fail registration after BeginTurn
 
-- **WHEN** 新提交已落库，但运行时注册失败且 goroutine 未启动
+- **WHEN** 新提交已落库，但运行时注册失败且 goroutine 未启动，系统能证明该 Run 属于本次新建且没有其他资源所有者
 - **THEN** 系统 MUST 不调用模型，并提交失败补偿及 read model 终态
 - **AND THEN** 相同 client id MUST 返回既有失败快照，不再执行或新建事实
+
+#### Scenario: Protect an existing runtime owner
+
+- **WHEN** 注册发现该 assistant ID 已有其他执行者、句柄或快照，或本次调用无法证明资源所有权
+- **THEN** 系统 MUST 返回明确 conflict，不启动第二次模型执行，不修改已有执行者的句柄、快照或持久化 Run
+- **AND THEN** 仅释放本次实际取得的资源，既有执行者保持其执行/取消职责；所有权不明的 active 记录由后续排他恢复校验收敛，不静默重建执行
 
 #### Scenario: Fail compensation storage
 

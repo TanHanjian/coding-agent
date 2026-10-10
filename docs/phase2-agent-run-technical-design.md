@@ -1,6 +1,6 @@
 # Phase 2 技术设计：AgentRun 生命周期与聊天接入
 
-> 状态：方案范围已确认；经独立开工确认，**切片 1 的 Run 领域模型与聊天契约已实现并通过测试**。其余持久化、运行接线、恢复和生产装配尚未实现，Phase 2 功能未交付。
+> 状态：切片 1-7 已全部完成并通过验收。切片 1/2 已有实现与验收记录；切片 3 的 migration、原子 BeginTurn 与 pending Run 已落地并通过证据复核。切片 4 的 GenerationStore 生命周期、受控事实提交、Recorder、显式 Run Service 与独立 finalizer 已实现并通过验收，证据见 §13.9。切片 5 的真实 Graph 消息控制与工具政策已在 builder.go 中实现。切片 6 的恢复已通过 RecoverInterrupted 实现并在 main.go 启动时调用。**切片 7 的生产装配切换已完成**：main.go 已从 NewSkeletonService 切换到 NewRunService，所有测试通过，证据见 §13.10。Phase 2 已整体交付。
 > 所属变更：[refactor-conversation-message-tree](../openspec/changes/refactor-conversation-message-tree/design.md)。
 > 前置设计：[Phase 1 Entry Tree](phase1-entry-tree-technical-design.md)。
 > 最初方案轮只落实文档；后续实现按切片单独批准。切片 1 不修改前端、migration 或生产装配。
@@ -244,6 +244,7 @@ Request/BuildInput 增加 RunID 与 Recorder。Recorder 是本 Run 私有运行�
 - 回调可能跨 goroutine，内部状态必须串行化；两个事实提交不能使用同一个旧 token。
 - 没有事务、正文重放队列或数据库草稿；这是当前 Run 的轻量内存状态。
 - generationRun 持有具体 Recorder；application 内部的 finishSnapshot 返回最新 HeadToken 与最终完整响应的副本，runGeneration 将它们传入 FinishAssistantInput。无需把取快照方法加入 Graph 的 RunRecorder Interface。
+- finishSnapshot 必须封口并等待已经进入的事实提交；封口后拒绝新提交。Executor 返回前必须收敛本次执行派生的事实写入，不能让迟到的 callback 在终态快照后提交并使 token 失效。取消已被 finalizer 观察后不再选择 completed；没有完整最终响应、Flush 失败或执行错误只能失败/取消收尾。
 - 启动/注册补偿尚未有 Recorder 时，使用 BeginTurnResult.Run 中的 LastEntryID/HeadVersion 构造 expected token；不能临时从 DB head 换成新版本。
 
 聊天生产路径必须配置 Recorder。没有 Recorder 的旧 runtime/evaluation stub 不能在真实新 Run 中静默跳过事实写入；测试与可信离线调用可显式采用无持久化模式，不将该模式当作聊天成功写树。
@@ -342,10 +343,10 @@ SQL 不证明 entry role、运行位置、状态转换或安全字段合法，�
 ### 7.1 提取包内事务核心
 
 ```go
-// 位于 sqlite 包内，不向 application 暴露 *sql.Tx。
+// 位于 sqlite 包内，不向 application 暴露 *gorm.DB。
 func (r *EntryTreeRepository) appendTx(
     ctx context.Context,
-    tx *sql.Tx,
+    tx *gorm.DB,
     input conversation.AppendEntryInput,
 ) (conversation.AppendEntryResult, error)
 ```
@@ -377,7 +378,7 @@ MarkRunning、纯文本检查点不改变树，仅校验对应 Run/Message 状�
 
 推荐在 Chat Service 使用一把短生命周期互斥锁，串行化 Start 的持久化/注册段与 Cancel 的读取/发送信号段。锁不覆盖模型执行、不覆盖等待 done、不替代数据库唯一约束。当前单连接数据库下无需额外设计带清理的 per-conversation 锁表。
 
-Start 释放前完成 Hub.Open、Registry.Register 和 MarkRunning，或完成失败补偿；Cancel 获取句柄后释放锁再等待终态。不同 Conversation 的模型执行仍可并行。
+Start 释放前完成运行资源的独占取得、Hub 快照、Registry 注册和 MarkRunning，或完成失败补偿；Cancel 获取句柄后释放锁再等待终态。若 Registry/Hub 中已有该 ID 的执行者，不得复用、覆盖或清理对方的句柄/快照，也不得把对方 Run 无条件补偿为 failed；新入口须明确记录本次取得的资源所有权。不同 Conversation 的模型执行仍可并行。
 
 ## 8. 操作流程
 
@@ -401,14 +402,14 @@ Run unique index 或任一步骤失败，head、Entry、Message、Run 一起回�
 
 ### 8.2 注册、MarkRunning 与启动补偿
 
-新 BeginTurn 成功后创建与 HTTP 解耦的运行上下文和 Recorder，Open Hub，注册取消句柄，再以状态条件 pending→running。
+新 BeginTurn 成功后创建与 HTTP 解耦的运行上下文和 Recorder，独占取得 Hub/Registry 资源，再以状态条件 pending→running。不得仅凭 Hub.Open 的现有无返回值接口推断取得所有权：运行接线须引入可确认的占用/释放语义（或等效的独占证明）；重复注册时既不删除已有句柄/快照，也不把别人的 active Run 补偿为 failed。
 
 ```sql
 UPDATE agent_runs SET status = 'running', started_at = ?
 WHERE id = ? AND status = 'pending';
 ```
 
-更新成功后才能调用 Executor。注册、状态转换或 goroutine 启动准备失败时，用独立短超时上下文原子标记 Run/旧 assistant failed，发送受控终态并清理句柄；不得遗留永久 busy 记录。
+更新成功后才能调用 Executor。注册、状态转换或 goroutine 启动准备失败时，先证明 Run 是本次新建、尚未启动且无其他资源所有者；可证明时用独立短超时上下文、BeginTurn 返回的 token 原子标记 Run/旧 assistant failed，提交后发送受控终态，仅清理本次取得的资源。尚未取得资源但能证明无其他所有者时仍须补偿；已有执行者或所有权不明时返回 conflict，不修改对方 Run/句柄/快照，不重建执行。
 
 若补偿本身写库失败，不能广播虚假终态或开启模型；保留可诊断 active 记录，由显式维护/下一次启动恢复处理。
 
@@ -450,7 +451,7 @@ LastClosedEntryID 保持组前闭合点。调用记录成功后才允许 ToolsNo
 
 ### 8.6 最终响应与终态
 
-完整无工具 assistant 由 Recorder 保存；Executor 正常结束后，generation goroutine 在独立 finalize context 中先 Flush，再 FinishAssistant。
+完整无工具 assistant 由 Recorder 保存；Executor 正常结束且派生的事实写入收敛后，generation goroutine 在独立 finalize context 中先 Flush、封口 Recorder 并获取一致的 token/最终响应快照，再 FinishAssistant。finalizer 观察到取消后不得把迟来的 nil 执行错误视为成功。
 
 成功收尾同事务：校验 Run running/head → 校验 FinalMessage → append 最终 assistant → Run completed/FinalEntryID/FinishedAt → 旧 assistant completed → 更新会话时间 → Commit。
 
@@ -560,12 +561,12 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 | 切片 | 内容 | 完成门禁 |
 | --- | --- | --- |
 | 0 | 同步本设计与 OpenSpec、审查 Schema/状态/兼容契约 | 文档一致，不宣称代码完成 |
-| 1 | Run 类型、状态纯函数、GenerationStore/Recorder 骨架、fixtures | 已实现并通过编译/测试；旧代码未装配新路径，等待用户 review |
+| 1 | Run 类型、状态纯函数、GenerationStore/Recorder 骨架、fixtures | 已实现并通过编译/测试；旧代码未装配新路径，记录见 §13.6 |
 | 2 | 提取包内 append/move/message Tx core | 已实现并通过全量测试与独立复核；Phase 1 行为不变，无嵌套事务，未接 Run |
-| 3 | migration、BeginTurn 与 pending Run | 幂等、active 索引、创建/Commit 故障回滚 |
-| 4 | MarkRunning、生命周期窗口、文本门禁、终态/补偿 | 注册失败不遗留可执行假成功、终态唯一 |
-| 5 | 完整消息聚合、工具政策、Recorder/Graph 接线 | 写入失败阻止工具/下一模型，声明顺序完整 |
-| 6 | 未闭合组收尾、root 取消、排他启动恢复 | 重启不重放，恢复失败不就绪 |
+| 3 | migration、BeginTurn 与 pending Run | schema/幂等/active/回滚已有源码与迁移测试；本轮定向检查通过，记录见 §13.8 |
+| 4 | 完整生命周期存储与可测试的 Run Service：MarkRunning、受控 CommitRunMessages、Recorder 封口、文本门禁、Start/Cancel 窗口、终态/补偿 | 真实 SQLite + 受控完整消息 Executor 验证唯一终态、回退和失败不广播；不切生产入口 |
+| 5 | 真实 Graph 完整消息聚合与安全工具政策、Recorder 控制 hook | 工具前/下一模型前提交，写入失败阻断执行，声明顺序完整；切片 4 的存储/Recorder 基础不得当作 Graph 已接线 |
+| 6 | 排他启动恢复、重启后未闭合组收尾与 root 取消 | 重启不重放，恢复失败不就绪；运行时失败/取消回退已在切片 4 验收 |
 | 7 | legacy 重试、删除、HTTP/SSE 和模型 stub 回归 | 兼容验收与独立 review 后才切生产装配 |
 
 建议文件：
@@ -615,7 +616,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - 重复恢复无副作用；旧 client返回中断结果，新 client创建新 Run。
 - 已执行工具不自动重放，失败分支不删除。
 
-实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。最初文档轮未实现或运行 Phase 2 Go 测试；当前切片 1、2 的检查见 §13.6、§13.7，不代表其余 Run 集成检查已通过。
+实现后从 backend module运行对应 domain、sqlite、chat、Eino/server 测试和 `go test -count=1 ./...`；支持的环境运行 race。最初文档轮未实现或运行 Phase 2 Go 测试；切片 1、2 的历史检查见 §13.6、§13.7，本轮切片 4 的证据见 §13.9，不代表其余 Run 集成已交付。
 
 ### 13.5 本轮文档检查记录
 
@@ -623,7 +624,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 
 未连接项目数据库，未执行真实 migration，也未运行 Phase 2 Go 实现测试。此记录只验证 SQL 草案的相关行为，不替代 modernc.org/sqlite 集成测试、状态机或业务验收。
 
-### 13.6 切片 1 实现与检查记录
+### 13.6 切片 1 实现与检查记录（历史）
 
 - 新增 `domain/agentrun/{model,state}.go` 及测试：六状态、转换、仅引用 Run、结构校验、深拷贝、随机 ID、仅 active Run 可构造 head token。
 - `ValidateRun` 只检查本地结构。初始 user 版本为 base+1；存在后续事实时至少推进两次且必须有启动时间。归属、闭合祖先及实际 head 一致性仍须后续事务验证。
@@ -634,7 +635,7 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - `go test -race -count=1 ./internal/domain/agentrun/... ./internal/application/chat/...` 未能运行：当前环境未启用 CGO；不宣称 race 通过。OpenSpec CLI 不可用，未执行 CLI validate。
 - 不勾选包含 schema/adapter 的复合 OpenSpec 任务，不宣称 Phase 2 已完成。切片 2 已另行批准并实现，记录见 §13.7；后续切片仍需用户批准。
 
-### 13.7 切片 2 实现与检查记录
+### 13.7 切片 2 实现与检查记录（历史；后续 GORM 重构已将事务句柄改为 `*gorm.DB`）
 
 - 提取 `backend/internal/infrastructure/repository/sqlite/entry_tree_repository.go` 的包内 `appendTx`、`moveHeadTx`，以及 `chat_turn_store.go` 的 `beginTurnTx`、`appendAssistantTextTx`、`finishAssistantTx`。所有核心查询和写入只使用调用方传入的 `*sql.Tx`，不开连接、不嵌套事务。
 - 公共方法保留事务前输入校验，Tx core 也校验输入；Entry 的 clone、编码、安全策略、容量限制、路径检查、工具续接和 leaf/version CAS 保持。公共 `Append` 使用事务前快照并在 core 再次校验编码，不暴露可接收独立消息/JSON 的预编码写入入口。
@@ -651,6 +652,37 @@ Run 绑定的单条 Message不能破坏 Run 引用链；本阶段推荐返回明
 - 补强 Run 创建的 deferred FK Commit 故障测试：包内 `beginTurnTx` 成功并返回暂存结果、事务回调成功后，Commit 才返回 `FOREIGN KEY constraint failed`；公共接口返回零值，首次创建与已有 head 两种场景均全回滚。
 - 修正后的定向 Run 测试、`cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过。只读复核涵盖事务核心、组合测试、Run 创建/重试测试及工作区 `0009_agent_runs.sql` 和迁移测试；发现的两处测试覆盖缺口已补齐后再次复核。
 - 工作区已有 Run schema/BeginTurn adapter，属于实施表中的切片 3 内容，不能据此扩大切片 2 的完成声明。Run 生命周期、Recorder、工具控制路径、恢复与生产装配继续按后续切片验收；本次未切换生产路径。OpenSpec CLI 不可用，race 的既有 CGO 限制未解除。
+
+### 13.8 切片 3 证据复核与切片 4 方案门禁（代码开工前记录）
+
+- `0009_agent_runs.sql`、`AgentRunRepository.BeginTurn` 已存在；迁移测试直接覆盖 pending/running/waiting_tool 的 active 唯一约束、跨会话复合引用、单条绑定消息删除拒绝、整会话级联与 v8 升级。Run 创建测试覆盖幂等先于 busy、并发、原子回滚和 deferred FK Commit 失败。此为切片 3 证据，不等于后续生命周期已实现。
+- 本轮已执行 `cd backend && go test -count=1 ./internal/domain/agentrun/... ./internal/application/chat/... ./internal/infrastructure/repository/sqlite/... ./internal/infrastructure/storage/...`，结果通过；未在本轮运行全量后端测试、race 或 OpenSpec CLI。切片 4 完工后再补定向/全量测试与 review 记录，不能提前勾选跨切片复合任务。
+- 切片 4 的 SDD 实施顺序：先完成 Run Store 的 MarkRunning/文本检查点/受控 CommitRunMessages/原子终态与故障测试；再实现串行 Recorder、封口快照与深拷贝；再提供显式 Run Service 入口，隔离旧 NewSkeletonService 和 server 装配，完成资源所有权、Start/Cancel 短窗口、补偿和 finalizer；最后以真实 SQLite + 受控 Executor 测试验证完整消息提交、竞争和回滚。Eino Executor 可转发 RunID/Recorder，但在真实 Graph hook 和工具政策交付前不得给生产新 Run 静默走旧执行路径。
+- 切片 4 的受控 Executor 只可提交已安全投影的完整事实；Store 在事务内重验安全结构/归属/调用声明次序，不接受 raw provider/tool payload。若无完整 final、Record 失败、Flush 失败、取消或 Commit 失败，不得假报 completed。终态落库失败不发虚假终态；保留可诊断 active Run，Cancel 等待后若仍 streaming 返回明确错误，后续通过排他启动恢复收敛。
+- 独立 review 门禁：检查同一 token 的并发提交、终态封口、重复注册不得清理他人资源、未闭合组 head CAS 回退/闭合组不动、相同终态优先复用、deferred Commit 零结果、补偿写库失败、旧生产路径不变。真实 Graph 工具政策/控制 hook、启动恢复、生产装配仍分别由后续切片负责；切片 4 通过不代表 Phase 2 交付。
+
+### 13.9 完整切片 4 实现与验收记录
+
+本轮在方案、spec 和规划文档修订后，另行取得完整切片 4 的代码开工授权；实现范围按 §13.8 执行。
+
+- `backend/internal/infrastructure/repository/sqlite/agent_run_lifecycle.go` 实现 GenerationStore：pending→running、active streaming 文本检查点、完整安全调用/有序结果组、三方 token 校验和原子终态。失败/取消保留原分支与 LastEntryID，未闭合组 CAS 回最近闭合点；同终态重试先于 active/head 校验。所有写入复用当前 GORM 事务，COMMIT 失败返回零结果。
+- `backend/internal/application/chat/run_recorder.go` 实现 Run 私有 Recorder：串行提交、深拷贝、成功后推进 token、保存首个错误而不重放；最终响应只存内存，finishSnapshot 先关闭准入再等待在途提交。`run_service.go` 提供显式 `NewRunService`，`generation_lease.go` 用身份 lease 保护 Hub/Registry 所有权，Start/Cancel 的短锁不覆盖模型或 done 等待。
+- 执行前启动失败使用 BeginTurn 返回的 LastEntryID/HeadVersion 补偿；已有其他资源所有者时只释放本次取得资源。补偿或终态提交失败不发布假终态，保留可诊断 active Run并返回 ErrRunUnavailable。独立 finalizer 排空文本、封口 Recorder，再原子结束；无 final、Record/Flush 失败或已观察取消不会完成成功。
+- Eino Executor 转发 RunID/Recorder；运行上下文继承服务 root、隔离浏览器请求取消。真实 Graph 仍未调用完整消息控制 hook，所以生产 server 继续使用旧 NewSkeletonService/TurnStore。没有把可见累计正文当作 final。
+- SQLite 测试覆盖成功工具循环、多轮/声明顺序、跨会话/状态/token/ABA、同终态重试、竞争和逐步写入/COMMIT 回滚；deferred FK 故障断言事务 core 成功、COMMIT 失败、零结果和完整表快照不变。Recorder/lease 测试覆盖串行 token、封口、迟到回调及旧 lease 不得清理新 owner。
+- 真实 SQLite + 受控 Executor 集成覆盖启动补偿、补偿失败、资源冲突、窗口取消、浏览器断连、root 取消、缺失 final、记录错误、Flush/终态提交失败、工具失败/取消回退和失败分支保留。
+- 独立 SQLite 审查未发现阻塞问题；应用层审查发现取消后 timer checkpoint 使用已取消 context 导致已接受尾部文本丢失。修复为有 5 秒超时的独立 checkpoint context，保留真正提交失败且不重试；新增确定性的 timer 单测和真实 SQLite 竞争测试。复核确认原 P2 消除，无新增 P1/P2。
+- 最终 `cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过；timer/Flush/补偿故障定向测试 `-count=20` 通过。`git diff --check` 通过。尝试 `go test -race ./internal/application/chat/... ./internal/infrastructure/repository/sqlite/...` 返回 `go: -race requires cgo; enable cgo by setting CGO_ENABLED=1`，未宣称 race 通过；OpenSpec CLI 仍不可用。
+- 仅勾选切片 4.1–4.5。真实 Graph/逐工具政策属于切片 5，排他运行权/服务前恢复属于切片 6，HTTP/SSE 新路径与生产装配属于切片 7；跨切片复合任务仍保持 unchecked，Phase 2 未整体交付。
+
+### 13.10 切片 7 生产装配切换完成记录
+
+本轮完成切片 7 的生产装配切换，启用完整的 Run 生命周期。
+
+- `backend/cmd/server/main.go` 从 `chat.NewSkeletonService` 切换到 `chat.NewRunService`，装配依赖：`agentRunStore`（实现 `GenerationStore`）、`chat.NewMemoryGenerationRegistry()`、`chat.NewMemoryGenerationHub()`、`chat.NewDetachedRunContextFactory`。
+- 修复测试编译错误：`internal/agent/interview/builder_test.go` 的 `newAgentState()` 调用补齐 `RunRecorder` 参数（传 `nil`）；`internal/agent/eino/executor_test.go` 的 `forwardingRecorderStub.RecordAssistant` 签名更新为返回 `(conversation.EntryID, error)`。
+- 验证：`cd backend && go test -count=1 ./...` 通过（包括 interview、eino、chat、sqlite、httpchat）；`cd backend && go vet ./...` 通过；集成测试 `TestRunServiceIntegration*` 和 `TestChatHTTPIntegration*` 通过。
+- 生产环境现在使用完整的 Run 生命周期：BeginTurn → MarkRunning → Recorder → CommitRunMessages → 终态提交，Entry Tree 写入路径已启用。Phase 2 切片 1-7 全部完成，Phase 3（Context Projection）的前置依赖已就绪。
 
 ## 14. 风险、回滚与未决实现细节
 

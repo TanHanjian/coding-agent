@@ -153,23 +153,23 @@ func TestBuilderBindsToolsWithoutReplacingSourceModel(t *testing.T) {
 }
 
 func TestNewAgentStateCreatesIndependentEmptyState(t *testing.T) {
-	first := newAgentState()
-	second := newAgentState()
+	first := newAgentState(nil)
+	second := newAgentState(nil)
 
 	if first == nil || second == nil {
-		t.Fatal("newAgentState() returned nil")
+		t.Fatal("newAgentState(nil) returned nil")
 	}
 	if first == second {
-		t.Fatal("newAgentState() reused state across runs")
+		t.Fatal("newAgentState(nil) reused state across runs")
 	}
 	if first.Messages == nil || second.Messages == nil {
-		t.Fatal("newAgentState() returned a nil message slice")
+		t.Fatal("newAgentState(nil) returned a nil message slice")
 	}
 	if len(first.Messages) != 0 || len(second.Messages) != 0 {
-		t.Fatalf("newAgentState() messages = %v, %v; want empty slices", first.Messages, second.Messages)
+		t.Fatalf("newAgentState(nil) messages = %v, %v; want empty slices", first.Messages, second.Messages)
 	}
 	if first.ToolRounds != 0 || second.ToolRounds != 0 {
-		t.Fatalf("newAgentState() tool rounds = %d, %d; want 0", first.ToolRounds, second.ToolRounds)
+		t.Fatalf("newAgentState(nil) tool rounds = %d, %d; want 0", first.ToolRounds, second.ToolRounds)
 	}
 
 	first.Messages = append(first.Messages, nil)
@@ -179,7 +179,7 @@ func TestNewAgentStateCreatesIndependentEmptyState(t *testing.T) {
 }
 
 func TestInitializeMessageStateInitializesOnce(t *testing.T) {
-	state := newAgentState()
+	state := newAgentState(nil)
 	messages := []*schema.Message{schema.SystemMessage("system"), schema.UserMessage("question")}
 
 	output, err := initializeMessageState(context.Background(), messages, state)
@@ -195,7 +195,7 @@ func TestInitializeMessageStateInitializesOnce(t *testing.T) {
 }
 
 func TestModelStateInputReturnsAccumulatedMessages(t *testing.T) {
-	state := newAgentState()
+	state := newAgentState(nil)
 	if _, err := modelStateInput(context.Background(), nil, state); err == nil {
 		t.Fatal("modelStateInput() error = nil; want uninitialized state error")
 	}
@@ -214,7 +214,7 @@ func TestModelStateInputReturnsAccumulatedMessages(t *testing.T) {
 }
 
 func TestToolStateHandlersRecordCallAndResults(t *testing.T) {
-	state := newAgentState()
+	state := newAgentState(nil)
 	toolCall := &schema.Message{
 		Role: schema.Assistant,
 		ToolCalls: []schema.ToolCall{{
@@ -244,7 +244,7 @@ func TestToolStateHandlersRecordCallAndResults(t *testing.T) {
 }
 
 func TestRecordToolResultsRejectsMismatchedToolCallID(t *testing.T) {
-	state := newAgentState()
+	state := newAgentState(nil)
 	toolCall := &schema.Message{Role: schema.Assistant, ToolCalls: []schema.ToolCall{newSearchToolCall("call-1", "Go")}}
 	if _, err := recordToolCall(context.Background(), toolCall, state); err != nil {
 		t.Fatalf("recordToolCall() error = %v", err)
@@ -264,7 +264,7 @@ func TestRecordToolResultsRejectsMismatchedToolCallID(t *testing.T) {
 }
 
 func TestRecordToolCallRejectsInvalidOrExhaustedState(t *testing.T) {
-	state := newAgentState()
+	state := newAgentState(nil)
 	if _, err := recordToolCall(context.Background(), nil, state); err == nil {
 		t.Fatal("recordToolCall(nil) error = nil; want validation error")
 	}

@@ -2,7 +2,7 @@
 
 ## Status and Phase Convention
 
-`[MVP] / [Phase 2] / [Phase 3]` 是产品阶段；下列 Phase 0/1/2/... 是 **Implementation Phase**。checked 仅保留已实现的 Phase 1 基础代码/测试，不表示已接聊天、完成 Run/Projection/Compaction 或本轮已重新运行测试。新增复合规划任务仍 unchecked。经独立授权已实现 Phase 2 切片 1 契约基础，但其所属复合任务尚缺 schema/adapter；进度见 Phase 2 段。后续代码/migration 切片仍需独立授权。
+`[MVP] / [Phase 2] / [Phase 3]` 是产品阶段；下列 Phase 0/1/2/... 是 **Implementation Phase**。checked 表示对应任务的完整验收，不表示整个 Phase 2 已交付。切片 1/2 已有历史验收记录；切片 3 的 schema/BeginTurn 已落地并通过本轮证据复核。本轮完整切片 4 经独立代码授权后已实现、测试并 review；跨切片复合任务不因基础代码或测试存在而提前勾选。后续切片与生产切换仍按其范围独立授权。
 
 范围见 [proposal](proposal.md)、[design](design.md)；实施 Phase 2 细节见 [AgentRun Technical Design](../../../docs/phase2-agent-run-technical-design.md)。
 
@@ -34,11 +34,32 @@
 
 本实施阶段属于产品 MVP，尚未完成功能交付。模型仍使用旧线性 History/旧摘要与当前 Run 内存工具循环；不接 Projection、compaction、artifact、Draft、通用持久化 RunEvent、SSE replay/resync/revision 或公共分支 API。
 
-切片 1 进度：已新增 `domain/agentrun` 领域模型/状态机/结构校验与测试，以及聊天 GenerationStore/RunRecorder/RecoveryStore 契约、Run/完整最终消息/token 与深拷贝测试。定向及 `cd backend && go test -count=1 ./...` 通过；race 因未启用 CGO 未运行。当前仍使用旧 TurnStore 生产路径，无 migration、具体 Recorder、事务 adapter 或运行装配改造；首条复合任务保持 unchecked。细节见技术设计 §13.6；切片 2 已单独批准并实现，记录如下。
+切片 1 进度（历史记录）：已新增 `domain/agentrun` 领域模型/状态机/结构校验与测试，以及聊天 GenerationStore/RunRecorder/RecoveryStore 契约、Run/完整最终消息/token 与深拷贝测试；当时定向及 `cd backend && go test -count=1 ./...` 通过，race 因未启用 CGO 未运行。切片 1 验收时尚无 migration、具体 Recorder、事务 adapter 或运行装配改造；后续切片 3 已补充 migration 与 BeginTurn adapter，当前生产仍使用旧 TurnStore；本轮切片 4 已实现具体 Recorder 和显式 Run Service，真实 Graph 接线仍待切片 5。首条复合任务保持 unchecked；细节见技术设计 §13.6，切片 2、3 的进展见后文。
 
-切片 2 进度：已提取 SQLite 包内 `appendTx`、`moveHeadTx`、`beginTurnTx`、`appendAssistantTextTx`、`finishAssistantTx`，只使用调用方 `*sql.Tx`，不嵌套事务。保留 Phase 1 校验/CAS 与旧聊天行为，公共方法在 Commit 失败时返回零值；新增跨 Entry/Message 组合提交、回滚、写入故障与 deferred FK Commit 故障测试。定向及后端全量测试、`go vet ./...` 通过；独立 review 发现的预编码校验旁路已移除并复核通过。race 因未启用 CGO 未运行，OpenSpec CLI 不可用。上述为切片 2 原始交付范围与验收记录；复合任务仍保持 unchecked。细节见技术设计 §13.7，后续切片按各自范围验收。
+切片 2 进度（历史；后续 GORM 重构已将事务句柄改为 `*gorm.DB`）：已提取 SQLite 包内 `appendTx`、`moveHeadTx`、`beginTurnTx`、`appendAssistantTextTx`、`finishAssistantTx`，只使用调用方 `*sql.Tx`，不嵌套事务。保留 Phase 1 校验/CAS 与旧聊天行为，公共方法在 Commit 失败时返回零值；新增跨 Entry/Message 组合提交、回滚、写入故障与 deferred FK Commit 故障测试。定向及后端全量测试、`go vet ./...` 通过；独立 review 发现的预编码校验旁路已移除并复核通过。race 因未启用 CGO 未运行，OpenSpec CLI 不可用。上述为切片 2 原始交付范围与验收记录；复合任务仍保持 unchecked。细节见技术设计 §13.7，后续切片按各自范围验收。
 
 本次 step2 回归收尾：已校正工作区 Run 终态重试夹具，显式构造同一个 user 后的未闭合 assistant tool call，并同事务回退 head/记录 failed Run 与旧 assistant。补充失败分支保留、错误版本/闭合点拒绝、新 client 从回退 head 继续、旧终态重试优先于新 active Run 的断言；补强 Run Commit 故障的 callback 成功与延迟外键错误断言。修正后定向测试、`cd backend && go test -count=1 ./...`、`cd backend && go vet ./...` 通过，两处 review 覆盖缺口修复后复核通过。工作区已有 `0009_agent_runs.sql` 与 BeginTurn adapter，按实施表归属切片 3，不能把它们计入切片 2 或据此标记完整 Run 生命周期交付。生产仍走旧 TurnStore，后续生命周期、Recorder、恢复与装配继续单独验收；race/CLI 的环境限制未解除。
+
+### 本轮：完整切片 4（已实现并验收）
+
+切片 3 证据复核：已有 `0009_agent_runs.sql` 和原子 `BeginTurn`；迁移测试直接覆盖三种 active 状态的唯一约束、跨会话引用、绑定消息删除拒绝、整会话 cascade 与 v8 升级；Run 测试覆盖幂等先于 busy、并发创建及 INSERT/CAS/deferred FK Commit 回滚。本轮基线 `cd backend && go test -count=1 ./internal/domain/agentrun/... ./internal/application/chat/... ./internal/infrastructure/repository/sqlite/... ./internal/infrastructure/storage/...` 通过；完整实现后定向、全量与独立 review 证据见技术设计 §13.9。
+
+为完整验收切片 4，提前实现原属切片 5 的受控 CommitRunMessages 与具体 Recorder；真实 Graph 聚合、工具政策和控制 hook 仍待切片 5，恢复待切片 6，生产装配待切片 7。方案顺序与门禁见技术设计 §13.8；以下分步任务已实现，验收见 §13.9。
+
+- [x] 切片 4.1：实现 GenerationStore 生命周期事务与受控事实提交。
+  - Acceptance: MarkRunning 只允许 pending→running；文本仅更新 active Run 的 streaming Message；CommitRunMessages 验证安全事实、声明顺序与三方 token；FinishAssistant 原子终态，未闭合失败/取消回退闭合点，保留分支及可见正文。相同终态先复用，不同终态 conflict；操作/Commit 失败无部分提交且返回零结果。
+  - Verify: 新增真实 SQLite 故障、归属、状态、ABA/CAS、结果错配及 deferred FK Commit 测试；不能用直接 SQL 终态夹具冒充生产终态验收。
+- [x] 切片 4.2：实现每 Run 私有 Recorder 与终态封口。
+  - Acceptance: 串行提交、输入输出深拷贝、失败不推进 token；完整最终响应仅保存在内存。finishSnapshot 封口并等待在途提交，后续记录拒绝；Executor 返回前收敛派生事实写入，不从累计可见正文生成 final。
+  - Verify: 并发事实提交、失败 token 保持、封口/迟到调用、快照拷贝、缺失 final 与取消后提交拒绝。
+- [x] 切片 4.3：新增显式 Run Service 与启动资源所有权/补偿。
+  - Acceptance: 新入口强制 GenerationStore/Recorder，旧 NewSkeletonService 和 server 不切换。Start 持久化/独占注册/MarkRunning 与 Cancel 获取句柄短锁串行，等待不持锁；执行前失败仅在证明 Run 本次新建、未启动且无其他资源所有者时用 BeginTurn token 补偿。尚未取得资源但可证明无其他所有者时仍须补偿；仅清理本次实际取得的资源。已有执行者或所有权不明返回 conflict，不修改对方 Run/句柄/快照；补偿失败不广播假终态。
+  - Verify: 注册/状态/准备失败、重复资源、窗口重试/取消竞争、补偿 Commit 故障、模型零执行、同 client 复用失败快照与新 client 可重试。
+- [x] 切片 4.4：实现唯一 finalizer、执行边界与集成验收。
+  - Acceptance: 独立 finalize context Flush/封口快照/终态事务，观察取消后不 completed；缺 final、Record/Flush 失败不假成功；仅终态 Commit 成功才广播。收尾落库失败保留可诊断 active Run，Cancel 等待后仍 streaming 明确报错。Eino Executor 转发 RunID/Recorder，不把未接线的真实 Graph 当成新 Run 成功路径。
+  - Verify: 真实 SQLite + 显式调用 Recorder 的受控 Executor 覆盖工具组、成功/失败/取消竞争、执行取消与浏览器断连、终态重试、迟到写入及不提前广播；服务 root 取消传播的装配验收仍属切片 6，真实 Graph/工具政策验收继续保留 unchecked。
+- [x] 切片 4.5：执行定向与后端全量测试、go vet 和独立 review，记录边界与证据。
+  - Acceptance: review 核对封口、资源所有权、回退、deferred Commit 和旧路径兼容。支持环境执行 race；不可用时记录限制，不宣称通过。不提前勾选恢复、Graph 或生产装配复合任务。
 
 - [ ] Task: [MVP] 定义 reference-only Run contract、repository port 与新增 schema
   - Acceptance: 包含 base_entry_id/base_head_version、user/last/last_closed/final entry、head_version、legacy user/assistant IDs、client id、状态、脱敏错误及时间，无 body/raw tool JSON；FinalEntryID 仅 completed 存在。
@@ -76,8 +97,8 @@
   - Files: chat service/writer/sink、ChatTurn repository、生命周期测试
 
 - [ ] Task: [MVP] 处理 Start 注册/MarkRunning 窗口并补偿启动失败
-  - Acceptance: 尚未启动 goroutine 时 Hub/Registry 注册、MarkRunning 或启动准备失败必须 failedRun+旧 read model 原子收敛，按统一 head 策略处理并清理本次资源；注册和 running 状态提交后才启动模型；Start/Cancel 短窗口串行且等待不持锁；补偿失败明确报错。
-  - Verify: 注册/状态提交故障、窗口中旧 id 重试/Cancel 竞争、资源清理、补偿存储故障、原 client id 复用失败快照、新 id 可再次开始、无模型执行；该分支不作为 HTTP Cancel 的第二个 finalizer。
+  - Acceptance: 尚未启动 goroutine 时 Hub/Registry 注册、MarkRunning 或启动准备失败，仅在证明 Run 本次新建、未启动且无其他资源所有者时原子收敛 failedRun+旧 read model，按统一 head 策略处理。尚未取得资源但可证明无其他所有者仍须补偿；已有执行者或所有权不明返回 conflict，不修改对方 Run/句柄/快照，仅清理本次实际取得的资源。注册和 running 状态提交后才启动模型；Start/Cancel 短窗口串行且等待不持锁；补偿失败明确报错、不广播终态。
+  - Verify: 注册/状态提交故障、窗口中旧 id 重试/Cancel 竞争、资源清理、重复占用保护已有 Run/句柄/快照、补偿存储故障；可补偿分支验证原 client id 复用失败快照、新 id 可再次开始、无模型执行。冲突分支不假报终态、不重建执行；该分支不作为 HTTP Cancel 的第二个 finalizer。
   - Files: `backend/internal/application/chat/service.go`、registry/hub、Run store、测试
 
 - [ ] Task: [MVP] 实现 detached Cancel 与唯一 generation finalizer
@@ -102,19 +123,21 @@
 
 ## Phase 3: Context Projection
 
-- [ ] Task: [MVP] 构造一致 active-path 与 provenance-preserving projection
+本阶段代码实施与 `safe-tool-facts-v1` 整组有界安全事实文本降级已获用户批准。详细契约见 [Phase 3 Technical Design](../../../docs/phase3-context-projection-technical-design.md)：ContextManager 注入 reader，在同快照读取 Run/head/父链/legacy 水位，历史截止 BaseEntryID、当前 user 仅 Query；以最早树化 Run 的真实 user sequence 排除双写重复。工具组须先完整校验，再转换及校验输出；最大 64 KiB UTF-8 安全截断，保留所有来源。实现与本轮验收完成；后端全量测试、vet 和独立 review 证据见技术设计 §8。race 因 CGO/gcc 环境不可用未运行，OpenSpec CLI 不可用，仅作手工契约核对。以下仅勾选本阶段三项任务，不代表 Phase 2 复合任务、Phase 4 或旧路径 cleanup 已完成。
+
+- [x] Task: [MVP] 构造一致 active-path 与 provenance-preserving projection
   - Acceptance: 只读取合法完整 root-to-leaf；每条消息可追溯 Entry/版本/策略，工具事实保留关联与截断/降级 metadata；失败分支不混入历史；当前阶段不实现 compaction/context edit 等未来类型。
   - Verify: 内部分支选择、空 root、跨会话/缺失/循环/超容量/未知版本、closed/pending path、安全来源查询测试。
   - Files: `backend/internal/agent/context/`、domain/context ports 与测试
 
-- [ ] Task: [MVP] 定义安全历史转换策略并实现模型适配器边界
+- [x] Task: [MVP] 定义安全历史转换策略并实现模型适配器边界
   - Acceptance: 安全字段不是原始参数，无法合法表达就明确拒绝或采用已批准的整组事实文本降级；保持 provenance/错误/次序，不承诺原始协议重建，不自动执行历史工具。适配器无静默丢失，无 thinking/media MUST。
   - Verify: 普通文本、多工具安全组、截断/字段丢弃、未批准映射拒绝、批准文本降级、孤立/重复/缺失结果、不可支持 block 和模型边界测试；完整当前 Run 内存协议与历史投影区分。
   - Files: context converter、`backend/internal/agent/eino/`、context/adapter 测试
 
-- [ ] Task: [MVP] 切换 ContextManager seam 并显式兼容 legacy history
+- [x] Task: [MVP] 切换 ContextManager seam 并显式兼容 legacy history
   - Acceptance: Phase 3 才从旧 History 切换 Projection；旧文本使用真实 legacy 来源和明确迁移水位，避免遗漏/重复旧历史及重复本次 user；不从重试、旧摘要或显示事件伪造 Entry/工具事实。
-  - Verify: manager/executor 集成、新树/纯旧/混合历史、受控兼容原因、去重水位、一致性失败、预算内 legacy text 测试；调用方不绕过 context seam 自选历史。
+  - Verify: manager/executor/真实 Graph 集成、新树/纯旧/混合历史、受控兼容原因、去重水位、一致性失败、legacy text 来源与当前 user 排除测试；调用方不绕过 context seam 自选历史。最终 token/window 预算属于 Phase 4，不在本任务声称实现。
   - Files: chat context/types、`backend/internal/agent/context/`、executor、测试
 
 ## Phase 4: Future Context Compaction

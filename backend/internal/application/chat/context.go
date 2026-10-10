@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/cloudwego/eino/schema"
+	"interview-memory-agent/backend/internal/domain/agentrun"
 	"interview-memory-agent/backend/internal/domain/conversation"
 )
 
@@ -24,6 +25,7 @@ type ContextManager interface {
 // request.
 type ContextInput struct {
 	Conversation     conversation.Conversation
+	RunID            agentrun.RunID
 	History          []conversation.Message
 	UserMessage      conversation.Message
 	InterviewContext string
@@ -33,6 +35,7 @@ type ContextInput struct {
 // summary is runtime-only and is never treated as a user-visible message.
 type PreparedContext struct {
 	History             []conversation.Message
+	ModelHistory        []conversation.ContextMessage
 	Query               string
 	InterviewContext    string
 	ConversationSummary string
@@ -44,6 +47,8 @@ type PreparedContext struct {
 // tool payloads, credentials, or prompts here.
 type ContextMetadata struct {
 	HistoryIncluded      int
+	ProjectionUsed       bool
+	LegacyBeforeSequence int
 	HistoryOmitted       int
 	SummaryUsed          bool
 	SummaryUpdated       bool

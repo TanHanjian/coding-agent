@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"interview-memory-agent/backend/internal/agent/interview"
@@ -33,8 +34,16 @@ func TestHealthHandler(t *testing.T) {
 	}
 }
 
+func TestNewChatExecutorRequiresProjectionReader(t *testing.T) {
+	cfg := config.Config{OpenAI: config.OpenAIConfig{APIKey: "test-key", Model: "test-model"}}
+	_, err := newChatExecutor(t.Context(), cfg, interview.ToolDependencies{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "projection reader is required") {
+		t.Fatalf("missing reader error = %v", err)
+	}
+}
+
 func TestNewChatExecutorRequiresChatConfiguration(t *testing.T) {
-	_, err := newChatExecutor(t.Context(), config.Config{}, interview.ToolDependencies{})
+	_, err := newChatExecutor(t.Context(), config.Config{}, interview.ToolDependencies{}, nil)
 	if err == nil {
 		t.Fatal("expected missing chat configuration error")
 	}

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	chat "interview-memory-agent/backend/internal/application/chat"
+	"interview-memory-agent/backend/internal/domain/agentrun"
 	"interview-memory-agent/backend/internal/domain/conversation"
 
 	"github.com/cloudwego/eino/compose"
@@ -62,6 +63,42 @@ func TestExecutorStreamForwardsTextDeltasAndBuildsTrustedInput(t *testing.T) {
 	}
 	if got, want := runtime.input.History[1].Role, schema.Assistant; got != want {
 		t.Fatalf("second history role = %q, want %q", got, want)
+	}
+}
+
+func TestExecutorStreamForwardsRunIDAndRecorderToBuilder(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		runID        agentrun.RunID
+		withRecorder bool
+	}{
+		{name: "legacy empty fields"},
+		{name: "run with recorder", runID: "run-1", withRecorder: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			builder := &builderStub{runtime: &runtimeStub{
+				reader: schema.StreamReaderFromArray([]*schema.Message{}),
+			}}
+			executor, err := NewExecutor(builder)
+			if err != nil {
+				t.Fatalf("NewExecutor() error = %v", err)
+			}
+			req := testRequest(nil)
+			req.RunID = tc.runID
+			if tc.withRecorder {
+				req.Recorder = &forwardingRecorderStub{t: t}
+			}
+
+			if err := executor.Stream(context.Background(), req, &sinkStub{}); err != nil {
+				t.Fatalf("Stream() error = %v", err)
+			}
+			if got, want := builder.input.RunID, req.RunID; got != want {
+				t.Fatalf("Build input RunID = %q, want %q", got, want)
+			}
+			if builder.input.Recorder != req.Recorder {
+				t.Fatal("Build input Recorder differs from the request Recorder")
+			}
+		})
 	}
 }
 
@@ -180,6 +217,20 @@ func TestExecutorPassesGraphEventCallbacksAndOptionalDebugCallbacks(t *testing.T
 			}
 		})
 	}
+}
+
+type forwardingRecorderStub struct {
+	t *testing.T
+}
+
+func (r *forwardingRecorderStub) RecordAssistant(context.Context, conversation.EntryMessage) (conversation.EntryID, error) {
+	r.t.Fatal("Executor must only forward the Recorder, not call RecordAssistant")
+	return "", nil
+}
+
+func (r *forwardingRecorderStub) RecordToolResults(context.Context, []conversation.EntryMessage) error {
+	r.t.Fatal("Executor must only forward the Recorder, not call RecordToolResults")
+	return nil
 }
 
 type builderStub struct {

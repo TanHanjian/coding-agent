@@ -597,3 +597,118 @@ func TestAgentRunLegacyIncompletePairIsNotReplaced(t *testing.T) {
 	}
 	assertRunCounts(t, ctx, db, 1, 0, 0, 0)
 }
+
+func TestRecoverInterruptedFindsAndFailsActiveRuns(t *testing.T) {
+	db, ctx, r := runFixture(t)
+	now := time.Now().UTC()
+	convRepo := NewConversationRepository(db)
+	
+	// Create conversations
+	for _, id := range []string{"conv1", "conv2", "conv3"} {
+		if err := convRepo.Create(ctx, conversation.Conversation{
+			ID: id, Title: "test", CreatedAt: now, UpdatedAt: now,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	
+	// Create a pending run in conversation 1
+	input1 := chat.BeginTurnInput{ConversationID: "conv1", ClientMessageID: "client1", Text: "hello"}
+	_, err := r.BeginTurn(ctx, input1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Create a running run with tool call in conversation 2
+	input2 := chat.BeginTurnInput{ConversationID: "conv2", ClientMessageID: "client2", Text: "hello"}
+	turn2, err := r.BeginTurn(ctx, input2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run2, err := r.MarkRunning(ctx, turn2.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Simulate tool call to make it waiting_tool
+	call := lifecycleCall(t)
+	token, err := run2.ActiveHeadToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.CommitRunMessages(ctx, chat.CommitRunMessagesInput{
+		RunID: run2.ID, ExpectedHead: token, Messages: []conversation.EntryMessage{call},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Create a completed run in conversation 3 (should not be recovered)
+	input3 := chat.BeginTurnInput{ConversationID: "conv3", ClientMessageID: "client3", Text: "hello"}
+	turn3, err := r.BeginTurn(ctx, input3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	run3, err := r.MarkRunning(ctx, turn3.Run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token3, err := run3.ActiveHeadToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	final := entryTxMessage(conversation.EntryRoleAssistant)
+	_, err = r.FinishAssistant(ctx, chat.FinishAssistantInput{
+		AssistantMessageID: run3.AssistantMessageID,
+		Status:             conversation.MessageStatusCompleted,
+		ExpectedHead:       &token3,
+		FinalMessage:       &final,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Run recovery
+	result, err := r.RecoverInterrupted(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	
+	// Should recover 2 active runs (1 pending + 1 waiting_tool)
+	if result.InterruptedRuns != 2 {
+		t.Fatalf("recovered runs = %d, want 2", result.InterruptedRuns)
+	}
+	if result.LegacyOnlyMessages != 0 {
+		t.Fatalf("recovered legacy = %d, want 0", result.LegacyOnlyMessages)
+	}
+	
+	// Verify runs are now failed
+	var failedCount int
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM agent_runs WHERE status = ?", agentrun.StatusFailed).Scan(&failedCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedCount != 2 {
+		t.Fatalf("failed run count = %d, want 2", failedCount)
+	}
+	
+	// Verify associated assistant messages are also failed
+	var failedMsgCount int
+	err = db.QueryRowContext(ctx, "SELECT COUNT(*) FROM messages WHERE role = ? AND status = ? AND error_code = ?",
+		conversation.MessageRoleAssistant, conversation.MessageStatusFailed, "interrupted").Scan(&failedMsgCount)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if failedMsgCount != 2 {
+		t.Fatalf("failed message count = %d, want 2", failedMsgCount)
+	}
+	
+	// Second recovery should find nothing
+	result2, err := r.RecoverInterrupted(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result2.InterruptedRuns != 0 || result2.LegacyOnlyMessages != 0 {
+		t.Fatalf("second recovery found runs: %+v", result2)
+	}
+}

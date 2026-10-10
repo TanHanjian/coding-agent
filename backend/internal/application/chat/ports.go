@@ -81,7 +81,7 @@ type GenerationStore interface {
 // Production new Runs require a Recorder; an offline no-persistence mode must
 // be explicitly selected rather than interpreting nil as successful recording.
 type RunRecorder interface {
-	RecordAssistant(context.Context, conversation.EntryMessage) error
+	RecordAssistant(context.Context, conversation.EntryMessage) (conversation.EntryID, error)
 	RecordToolResults(context.Context, []conversation.EntryMessage) error
 }
 

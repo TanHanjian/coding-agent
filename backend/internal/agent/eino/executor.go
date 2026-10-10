@@ -85,6 +85,7 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 
 	prepared, err := e.contextManager.Prepare(ctx, chat.ContextInput{
 		Conversation:     req.Conversation,
+		RunID:            req.RunID,
 		History:          req.History,
 		UserMessage:      req.UserMessage,
 		InterviewContext: req.InterviewContext,
@@ -93,17 +94,25 @@ func (e *Executor) Stream(ctx context.Context, req chat.Request, sink chat.TextS
 		return fmt.Errorf("prepare agent context: %w", err)
 	}
 
+	var schemaHistory []*schema.Message
+	if prepared.ModelHistory != nil {
+		schemaHistory, err = chat.ContextMessagesToSchema(prepared.ModelHistory)
+	} else {
+		schemaHistory, err = toSchemaHistory(prepared.History)
+	}
+	if err != nil {
+		return err
+	}
 	rt, err := e.builder.Build(ctx, chat.BuildInput{
+		RunID:               req.RunID,
+		Recorder:            req.Recorder,
 		Conversation:        req.Conversation,
 		History:             prepared.History,
+		ModelHistory:        conversation.CloneContextMessages(prepared.ModelHistory),
 		UserMessage:         req.UserMessage,
 		InterviewContext:    prepared.InterviewContext,
 		ConversationSummary: prepared.ConversationSummary,
 	})
-	if err != nil {
-		return err
-	}
-	schemaHistory, err := toSchemaHistory(prepared.History)
 	if err != nil {
 		return err
 	}

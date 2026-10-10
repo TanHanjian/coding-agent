@@ -91,6 +91,75 @@ func TestGenerationTextWriterIgnoresEmptyBatch(t *testing.T) {
 	}
 }
 
+type cancelledCheckpointStore struct {
+	TurnStore
+	attempts chan error
+}
+
+func (s *cancelledCheckpointStore) AppendAssistantText(ctx context.Context, _, _ string) error {
+	err := ctx.Err()
+	s.attempts <- err
+	return err
+}
+
+func TestBufferedTextSinkTimerDrainsAcceptedTextAfterCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	attempts := make(chan error, 1)
+	events := make([]string, 0, 1)
+	hub := &writerHubSpy{events: &events}
+	store := &cancelledCheckpointStore{attempts: attempts}
+	sink := newBufferedTextSink(newGenerationTextWriter(store, hub, "m-assistant"), "m-assistant", TextBufferPolicy{MaxBytes: 1024, MaxWait: time.Hour})
+	if err := sink.WriteChunk(ctx, "accepted tail"); err != nil {
+		t.Fatal(err)
+	}
+	// Reset the already-created timer after cancellation so it necessarily
+	// tries its write before the finalizer is allowed to drain the sink.
+	cancel()
+	sink.mu.Lock()
+	sink.timer.Reset(0)
+	sink.mu.Unlock()
+	select {
+	case err := <-attempts:
+		if err != nil {
+			t.Fatalf("timer inherited execution cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("checkpoint did not run")
+	}
+	if err := sink.close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if hub.text != "accepted tail" {
+		t.Fatalf("lost accepted tail: %q", hub.text)
+	}
+}
+
+func TestBufferedTextSinkCloseDrainsAcceptedTextAndRejectsLateCallbacks(t *testing.T) {
+	events := make([]string, 0, 3)
+	store := &writerStoreStub{events: &events}
+	hub := &writerHubSpy{events: &events}
+	sink := newBufferedTextSink(newGenerationTextWriter(store, hub, "m-assistant"), "m-assistant", TextBufferPolicy{MaxBytes: 1024, MaxWait: time.Hour})
+	if err := sink.WriteChunk(context.Background(), "accepted"); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := sink.WriteChunk(context.Background(), "late"); err == nil {
+		t.Fatal("late text accepted")
+	}
+	if err := sink.WriteEvent(context.Background(), GenerationEvent{Kind: GenerationEventToolInput}); err == nil {
+		t.Fatal("late event accepted")
+	}
+	if err := sink.close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if store.text != "accepted" || !reflect.DeepEqual(events, []string{"store", "hub"}) {
+		t.Fatalf("late callbacks changed committed output: %q %v", store.text, events)
+	}
+}
+
 func TestBufferedTextSinkFlushesTextBeforePublishingStepEvent(t *testing.T) {
 	events := make([]string, 0, 3)
 	store := &writerStoreStub{events: &events}

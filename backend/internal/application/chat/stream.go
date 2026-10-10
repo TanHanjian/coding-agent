@@ -2,6 +2,7 @@ package chat
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +36,7 @@ type bufferedTextSink struct {
 
 	timer   *time.Timer
 	timerID uint64
+	closed  bool
 
 	mu      sync.Mutex
 	flushMu sync.Mutex
@@ -55,6 +57,14 @@ func newBufferedTextSink(writer *generationTextWriter, assistantMessageID string
 }
 
 func (s *bufferedTextSink) Flush(ctx context.Context) error {
+	return s.flush(ctx, 0)
+}
+
+// close seals new text and drains any previously accepted checkpoint.
+func (s *bufferedTextSink) close(ctx context.Context) error {
+	s.mu.Lock()
+	s.closed = true
+	s.mu.Unlock()
 	return s.flush(ctx, 0)
 }
 
@@ -101,16 +111,28 @@ func (s *bufferedTextSink) WriteEvent(ctx context.Context, event GenerationEvent
 	if err := s.Flush(ctx); err != nil {
 		return err
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return errors.New("text sink is closed")
+	}
 	s.writer.CommitEvent(event)
 	return nil
 }
 
 func (s *bufferedTextSink) WriteChunk(ctx context.Context, chunk string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if chunk == "" {
 		return nil
 	}
 
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return errors.New("text sink is closed")
+	}
 	if s.firstErr != nil {
 		err := s.firstErr
 		s.mu.Unlock()
@@ -135,7 +157,12 @@ func (s *bufferedTextSink) startTimerLocked(ctx context.Context) {
 	s.timerID++
 	timerID := s.timerID
 	s.timer = time.AfterFunc(s.policy.MaxWait, func() {
-		_ = s.flush(ctx, timerID)
+		// This checkpoint contains text already accepted by WriteChunk.
+		// Run cancellation must not poison its final drain with firstErr;
+		// keep the database attempt bounded independently of execution.
+		checkpointCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = s.flush(checkpointCtx, timerID)
 	})
 }
 

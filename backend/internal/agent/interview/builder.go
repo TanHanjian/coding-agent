@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	"interview-memory-agent/backend/internal/agent/eino"
 	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	chat "interview-memory-agent/backend/internal/application/chat"
 	"interview-memory-agent/backend/internal/domain/conversation"
@@ -44,15 +45,20 @@ type GraphInput = chat.RuntimeInput
 // agentState 是单次 Graph 运行私有的运行时状态。它承载模型和工具循环
 // 之间的完整消息上下文，不进入 RuntimeInput，也不持久化到 SQLite。
 type agentState struct {
-	Messages   []*schema.Message
-	ToolRounds int
+	Messages         []*schema.Message
+	ToolRounds       int
+	Recorder         chat.RunRecorder
+	LastCallEntryID  conversation.EntryID
+	PendingToolCalls map[string]string // callID -> toolName
 }
 
 // newAgentState 必须为每次 Graph 运行返回一个全新的状态，避免并发请求
 // 共享消息切片。工具循环会在此追加 assistant tool call 和 tool message。
-func newAgentState() *agentState {
+func newAgentState(recorder chat.RunRecorder) *agentState {
 	return &agentState{
-		Messages: make([]*schema.Message, 0),
+		Messages:         make([]*schema.Message, 0),
+		Recorder:         recorder,
+		PendingToolCalls: make(map[string]string),
 	}
 }
 
@@ -91,7 +97,7 @@ func modelStateInput(
 // recordToolCall stores the assistant message that requested tool execution
 // and enforces the per-run tool invocation limit before tools run.
 func recordToolCall(
-	_ context.Context,
+	ctx context.Context,
 	message *schema.Message,
 	state *agentState,
 ) (*schema.Message, error) {
@@ -100,6 +106,27 @@ func recordToolCall(
 	}
 	if state.ToolRounds >= maxToolIterations {
 		return nil, errors.New("tools: maximum tool iterations exceeded")
+	}
+
+	// Convert and record the complete assistant message before tools execute
+	if state.Recorder != nil {
+		entryMessage, err := eino.ConvertAssistantMessage(message)
+		if err != nil {
+			return nil, fmt.Errorf("convert assistant message: %w", err)
+		}
+
+		callEntryID, err := state.Recorder.RecordAssistant(ctx, entryMessage)
+		if err != nil {
+			return nil, fmt.Errorf("record assistant message: %w", err)
+		}
+
+		// Store the CallEntryID and pending tool calls for later validation
+		state.LastCallEntryID = callEntryID
+		state.PendingToolCalls = make(map[string]string, len(message.ToolCalls))
+		for i := range message.ToolCalls {
+			tc := &message.ToolCalls[i]
+			state.PendingToolCalls[tc.ID] = tc.Function.Name
+		}
 	}
 
 	state.Messages = append(state.Messages, message)
@@ -111,7 +138,7 @@ func recordToolCall(
 // control returns to chat_model, so the next model invocation can read the
 // full conversation.
 func recordToolResults(
-	_ context.Context,
+	ctx context.Context,
 	messages []*schema.Message,
 	state *agentState,
 ) ([]*schema.Message, error) {
@@ -152,6 +179,27 @@ func recordToolResults(
 	}
 	if len(pending) != 0 {
 		return nil, errors.New("tools: missing result for pending tool call")
+	}
+
+	// Record tool results to Entry Tree via Recorder
+	if state.Recorder != nil && len(state.PendingToolCalls) > 0 {
+		// We need the CallEntryID from the last recorded assistant message
+		// For now, we'll need to track this in state or modify the Recorder interface
+		// TODO: This requires storing the last entry ID after RecordAssistant
+		// Placeholder implementation for now
+		if state.LastCallEntryID != "" {
+			entryMessages, err := eino.ConvertToolResultMessages(messages, state.LastCallEntryID, state.PendingToolCalls)
+			if err != nil {
+				return nil, fmt.Errorf("convert tool results: %w", err)
+			}
+
+			if err := state.Recorder.RecordToolResults(ctx, entryMessages); err != nil {
+				return nil, fmt.Errorf("record tool results: %w", err)
+			}
+
+			// Clear pending calls after successful recording
+			state.PendingToolCalls = make(map[string]string)
+		}
 	}
 
 	state.Messages = append(state.Messages, messages...)
@@ -244,19 +292,26 @@ func normalizeHistory(messages []*schema.Message) []*schema.Message {
 
 func promptVariables(input chat.BuildInput) (map[string]any, error) {
 	history := make([]*schema.Message, 0, len(input.History))
-	for i, message := range input.History {
-		var role schema.RoleType
-		switch message.Role {
-		case conversation.MessageRoleUser:
-			role = schema.User
-		case conversation.MessageRoleAssistant:
-			role = schema.Assistant
-		default:
-			return nil, fmt.Errorf("prompt history message %d: unsupported role %q", i, message.Role)
+	if input.ModelHistory != nil {
+		var err error
+		history, err = chat.ContextMessagesToSchema(input.ModelHistory)
+		if err != nil {
+			return nil, err
 		}
-		history = append(history, &schema.Message{Role: role, Content: message.Content})
+	} else {
+		for i, message := range input.History {
+			var role schema.RoleType
+			switch message.Role {
+			case conversation.MessageRoleUser:
+				role = schema.User
+			case conversation.MessageRoleAssistant:
+				role = schema.Assistant
+			default:
+				return nil, fmt.Errorf("prompt history message %d: unsupported role %q", i, message.Role)
+			}
+			history = append(history, &schema.Message{Role: role, Content: message.Content})
+		}
 	}
-
 	return map[string]any{
 		"history":              history,
 		"query":                strings.TrimSpace(input.UserMessage.Content),
@@ -395,7 +450,7 @@ func (b *Builder) buildGraph(ctx context.Context, input chat.BuildInput) (compos
 
 	graph := compose.NewGraph[GraphInput, *schema.Message](
 		compose.WithGenLocalState(func(context.Context) *agentState {
-			return newAgentState()
+			return newAgentState(input.Recorder)
 		}),
 	)
 

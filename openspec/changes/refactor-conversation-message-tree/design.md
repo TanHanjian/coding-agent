@@ -2,12 +2,12 @@
 
 ## 1. Scope and Delivery Map
 
-本文落实已批准的规划；切片 1 的 Run 领域模型与聊天契约已经独立批准并实现，不代表授权后续业务接线或 migration。产品阶段标签 `[MVP] / [Phase 2] / [Phase 3]` 与实施顺序 **Implementation Phase 1/2/3/...** 独立。
+本文落实已批准的规划；切片 1/2 已有验收记录，切片 3 的 Run schema 与原子 BeginTurn 已落地并通过本轮复核。本轮完整切片 4 经单独代码授权后已实现并验收，包含生命周期事务、受控事实提交、具体 Recorder 和显式 Run Service；真实 Graph 接线、恢复和生产切换仍按后续切片交付。产品阶段标签 `[MVP] / [Phase 2] / [Phase 3]` 与实施顺序 **Implementation Phase 1/2/3/...** 独立。
 
 | Implementation phase | Product phase | Boundary |
 |---|---|---|
 | Phase 1 | MVP | 已实现独立 Entry Tree 代码/测试：message、user/assistant/toolResult、leaf+version CAS、安全白名单；未接 ChatTurn |
-| Phase 2 | MVP | Run 领域模型与聊天契约骨架已实现；ChatTurn 原子集成、完整安全 assistant/toolResult 事实、取消/恢复及生产接线仍待实现；旧线性模型 history 和现有 HTTP/SSE 保留 |
+| Phase 2 | MVP | Run 契约、事务核心、schema 与原子 BeginTurn 已落地；本轮规划完整生命周期存储与可测试 Run Service；真实 Graph 事实/安全工具政策、恢复及生产接线仍待实现；旧线性模型 history 和现有 HTTP/SSE 保留 |
 | Phase 3 | MVP | 待实现 Context Projection 与模型适配器转换，才切换模型 history 来源 |
 | Phase 4 | Phase 2 | 未来 compaction、预算、摘要提交/复用 |
 | Optional follow-up | Phase 2 | 未来独立可选 artifact/TTL，在核心 Run/Projection 之后；不属于 Phase 1 或 Phase 2 Run |
@@ -130,7 +130,15 @@ assistant call 提交事务推进 head、LastEntryID/HeadVersion，并置 waitin
 
 执行上下文不继承浏览器请求取消，但必须继承进程 root 的关闭信号；服务关闭先停止新提交、取消/等待执行，再关闭 DB。显式 Cancel 只发出取消信号，generation goroutine 是已启动执行的唯一 finalizer：停止/隔离后续写入，使用独立短收尾上下文 flush 可见文本，再有序提交唯一终态。取消、成功与错误按已观察信号和终态提交顺序竞争；成功已提交不能被迟到取消覆盖，取消被 finalizer 观察后不能再完成成功。终态后 hook、checkpoint 和广播拒绝迟到写入。
 
-Start 在 BeginTurn 提交后若 Hub/Registry 注册、pending→running 或启动准备失败且尚未启动 goroutine，必须补偿 Run 与旧 streaming Message 为 failed，按同样 head 策略处理并清理本次内存资源；不能留下 busy 槽位或假 streaming。执行只能在注册及 MarkRunning 成功后启动；Start 注册段与 Cancel 发送信号段须串行化，等待终态不持该锁，句柄缺失不能解释为中断。补偿失败必须显式报错，不能返回成功。此未启动分支与服务启动恢复不是 HTTP Cancel 的第二个 finalizer。
+Start 在 BeginTurn 提交后若 Hub/Registry 注册、pending→running 或启动准备失败且尚未启动 goroutine，先证明 Run 是本次新建、未启动且无其他资源所有者；可证明时必须补偿 Run 与旧 streaming Message 为 failed，按同样 head 策略处理并仅清理本次取得的资源。尚未取得资源但可证明无其他所有者时仍须补偿；已有执行者或所有权不明时返回 conflict，不修改对方 Run、句柄或快照，不重建执行。执行只能在注册及 MarkRunning 成功后启动；Start 注册段与 Cancel 发送信号段须串行化，等待终态不持该锁，句柄缺失不能解释为中断。补偿失败必须显式报错、不广播终态；此未启动分支与服务启动恢复不是 HTTP Cancel 的第二个 finalizer。
+
+### 4.6 本轮完整切片 4 的交付边界
+
+完整切片 4 提前交付 GenerationStore 的受控 CommitRunMessages 和具体 Recorder，为生命周期测试提供完整事实与 token；这不是提前宣称真实 Graph 工具循环交付。Store 只接收安全投影后的完整 assistant 调用或当前组全部结果，在同事务重验结构、归属、状态与 head；Recorder 串行提交，失败不推进 token，最终快照封口并等待在途提交，封口后拒绝迟到事实。finalizer 观察取消后不得完成成功，缺少完整最终响应或 Flush 失败必须受控失败/取消。
+
+新增显式 Run Service 入口，必须配置 GenerationStore 与 Recorder；保留旧 NewSkeletonService 及 server 装配。Start/Cancel 的短锁不替代 Hub/Registry 资源所有权：创建与释放必须有可验证的占用语义，只清理本次取得的资源；发现已有执行者不得覆盖其快照、删除其句柄或无条件补偿其 Run。终态 Commit 失败不广播、不伪造完成；Cancel 等待后仍 streaming 时返回明确不可用错误，持久化 active 记录留给后续排他恢复。
+
+本轮以真实 SQLite + 显式调用 Recorder 的受控 Executor 验证创建、注册、运行、工具事实、终态与取消流程。Eino Executor 仅转发 RunID/Recorder；真实 Graph 的完整消息聚合、安全工具政策和控制 hook 仍在切片 5，恢复在切片 6，生产切换在切片 7。不得用累计可见正文伪造完整事实，不得在真实 Graph 未接线前把新 Run Service 配进生产。详细顺序和验收见技术设计 §12、§13.8、§13.9。
 
 ## 5. Recovery and Stream Compatibility
 
@@ -152,6 +160,8 @@ Start 的 conversation/user/assistant Message IDs、Subscribe/Cancel 的 assista
 
 ### 6.1 Implementation Phase 3 Projection
 
+本阶段代码与 `safe-tool-facts-v1` 已由用户批准，详细接口、快照、水位及验收见 [Phase 3 Technical Design](../../../docs/phase3-context-projection-technical-design.md)。生产通过 ContextManager 注入 ProjectionReader 读取；历史绑定本轮 Run/BaseEntryID，当前 user 单独作为 Query。最早树化 Run 所关联 user Message.sequence 为 legacy 前缀水位；闭合工具组整体映射为有界安全事实文本，保留版本、关联、错误和截断来源，不制造原始协议。未闭合/损坏路径、缺水位及 head 冲突明确拒绝，不静默回退。
+
 沿 active leaf 读取完整 root-to-leaf 路径，只包含当前路径；来源映射保留 Entry ID、版本、投影策略、call/result 关联和降级原因。缺 parent、跨会话、循环、未知版本或未闭合工具组不得发送部分“成功”历史。失败分支仍可内部审计，但不会自动混入新上下文。
 
 SafeToolCall 字段不是原始函数 arguments：转换必须明确拒绝，或采用经批准、有界且保留 provenance 的历史事实文本降级；降级整组、明确安全摘要/截断含义，不制造 provider 工具执行承诺。只有具备另行批准且信息完备的合法协议映射才可保留工具协议，不能仅凭 ID/工具名和字段摘要承诺重建。不会从历史自动执行工具。
@@ -169,11 +179,11 @@ branch summary/context edit、system/media 新持久化类型及产品 Phase 3 �
 ## 7. Persistence, Indexes and Isolation
 
 - 已有基础 `conversation_entry_nodes` / `conversation_entry_heads` 保存节点和 leaf/version；保持同会话 parent/head 约束与不可变保护，不改写已发布 migration。
-- 待新增 `agent_runs` 只保存上述身份、状态、引用、脱敏错误和时间。对 `conversation_id + client_message_id` 建唯一约束；对 active 状态的 conversation 建部分唯一约束，保证单会话至多一个 pending/running/waiting_tool Run；assistant_message_id 提供唯一关联/查询索引。恢复查询使用 active 状态索引，其他索引按实际访问验证，不增加无调用方事件表。
+- 已有 `0009_agent_runs.sql` 创建 `agent_runs`，只保存上述身份、状态、引用、脱敏错误和时间。`conversation_id + client_message_id` 唯一约束、active conversation 部分唯一约束和 assistant_message_id 唯一关联已落地并有迁移测试，保证单会话至多一个 pending/running/waiting_tool Run。后续恢复查询应验证 active 状态索引的实际使用，其他索引按访问验证，不增加无调用方事件表。
 - Run 的 Entry/legacy Message 引用均校验 conversation 归属，基础复合 FK 与事务校验共同保护；跨会话 Entry、client id 查询和 assistantMessageID 查询不能泄漏数据。client id 的作用域是 conversation，不是全库。
 - BeginTurn、call 提交、结果 batch、成功 FinishAssistant、失败回退和 recovery 各自使用共享 DB 事务内的 tx-local helper；核心一致性不采用独立双写、异步 outbox 或“先返回成功后补写”。
 - 会话删除必须同时清理 Entry/head/Run/legacy Message；新增引用不破坏级联删除。artifact 尚未启用，不增其表。现有 `generation_events` 和 `conversation_context_summaries` 不删除，也不被重新解释为 Run 正文或树摘要。
-- migration 是后续代码审批事项；不重写已有 migration checksum，不把保留旧读取路径误称为可直接回滚旧二进制。
+- 现有 Run migration 已落地；后续新增 migration 仍须独立代码审批，不重写已有 migration checksum，不把保留旧读取路径误称为可直接回滚旧二进制。
 
 ## 8. Migration Matrix
 
@@ -189,7 +199,7 @@ branch summary/context edit、system/media 新持久化类型及产品 Phase 3 �
 
 | Risk | Mitigation / evidence |
 |---|---|
-| 把已有基础误报为完整 MVP | 仅基础任务保持 checked；Phase 2/3、compaction/artifact 全部待实现 |
+| 把已有基础误报为完整 MVP | Phase 2 schema/原子 BeginTurn 已落地；生命周期、Graph、恢复与生产装配仍待实现，Phase 3、compaction/artifact 未实现；复合任务按完整验收勾选 |
 | ChatTurn/Entry/Run 部分成功 | 共享事务与 COMMIT 故障注入；BeginTurn/成功收尾/read model 均验证 rollback |
 | 取消或 pending group 阻塞后续请求 | 单 finalizer、终态有序、CAS 回退闭合点、保留 LastEntryID；无 fake result |
 | 图摘要漏掉调用/持久化错误被吞 | 完整消息控制 hook；call commit 先于工具、batch commit 先于下一模型 |
@@ -197,4 +207,4 @@ branch summary/context edit、system/media 新持久化类型及产品 Phase 3 �
 | 重启误修未知 head 或 legacy orphan | 单实例前置恢复、关联一致性校验、失败阻止服务，不依据 Hub 缺失判失败 |
 | 隐私旁路或 artifact 扩 scope | 工具逐项策略 review、Entry/Run/messages/log/SSE 静态与动态断言，artifact 独立可选 |
 
-验收分基础、Run、Projection、未来 compaction/可选 artifact 和兼容清理进行。Phase 2 必测新/旧幂等、幂等优先于 busy、并发提交、声明顺序 batch、提交失败阻断执行、注册补偿、成功原子终态、取消竞争、未闭合回退/闭合保持、恢复 orphan/未知 head、会话隔离和现有 HTTP/SSE。基础代码和测试存在不代表本轮运行了测试；OpenSpec CLI 不可用，本轮只能手工核对文档、链接和任务状态。
+验收分基础、Run、Projection、未来 compaction/可选 artifact 和兼容清理进行。Phase 2 必测新/旧幂等、幂等优先于 busy、并发提交、声明顺序 batch、提交失败阻断执行、注册补偿、成功原子终态、取消竞争、未闭合回退/闭合保持、恢复 orphan/未知 head、会话隔离和现有 HTTP/SSE。本轮已运行的定向基线与历史验收记录分开列于技术设计 §13.8；不据此宣称后续实现测试已通过。OpenSpec CLI 不可用，规范一致性通过手工审查、链接和任务状态检查验证，不能替代 CLI validate。

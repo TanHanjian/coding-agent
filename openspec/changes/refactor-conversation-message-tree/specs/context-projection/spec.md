@@ -48,6 +48,8 @@
 - **THEN** 系统 MUST 返回分类错误，不能生成貌似原始的 arguments JSON
 - **AND THEN** 不得因历史调用而再次执行工具或从 artifact/旧事件补取未授权 raw payload
 
+系统 MUST 一致采用已批准的 `safe-tool-facts-v1` 策略：完整闭合工具组映射为一条 assistant 安全事实文本，不生成 ToolCalls/tool role 或原始 arguments。组内有序内容使用结构化编码，保留原 assistant 文本、安全调用/结果、错误与截断说明；每组最大 64 KiB，全部校验后 UTF-8 安全截断并保留全部来源。Projection version 为 `context-v1`。
+
 #### Scenario: Apply an approved factual-text downgrade
 
 - **WHEN** 有明确批准的组级安全映射策略可以把闭合调用组表达为有界历史事实文本
@@ -95,6 +97,8 @@
 - **WHEN** 旧历史尚未映射 Entry，但会话需要继续聊天
 - **THEN** 系统 MUST 通过显式 legacy text 来源在安全预算内兼容读取，不无提示丢掉旧历史
 - **AND THEN** legacy Message 与新 Entry 的边界 MUST 可诊断，缺失工具协议 MUST 不被补造
+
+一致读取以本轮 ConversationID、RunID、真实 UserMessageID 绑定：初次 Prepare 时 head/Run token MUST 一致且 last=user；读取并验证完整 user 路径后，历史截止 BaseEntryID，当前 user 单独作为 Query。legacy 覆盖水位 MUST 为最早 tree-backed Run 所关联的真实 user Message.sequence；只选择该水位前 completed legacy text，水位后双写正文不得重复进入历史。缺关联边界、树化后未覆盖 legacy 或 head 冲突 MUST 明确失败。Projection 不修改 head、不以另取闭合点掩盖 pending path。
 
 #### Scenario: Combine mapped and unmapped history
 

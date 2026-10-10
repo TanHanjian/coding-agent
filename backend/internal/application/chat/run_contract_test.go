@@ -27,7 +27,7 @@ func (*generationContractFixture) CommitRunMessages(context.Context, CommitRunMe
 
 type recorderContractFixture struct{}
 
-func (*recorderContractFixture) RecordAssistant(context.Context, conversation.EntryMessage) error {
+func (*recorderContractFixture) RecordAssistant(context.Context, conversation.EntryMessage) (conversation.EntryID, error) {
 	panic("contract fixture must not execute")
 }
 

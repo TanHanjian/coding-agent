@@ -37,6 +37,7 @@ type BuildInput struct {
 	Recorder            RunRecorder
 	Conversation        conversation.Conversation
 	History             []conversation.Message
+	ModelHistory        []conversation.ContextMessage
 	UserMessage         conversation.Message
 	InterviewContext    string
 	ConversationSummary string
