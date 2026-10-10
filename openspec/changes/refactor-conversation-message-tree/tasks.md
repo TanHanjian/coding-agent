@@ -175,19 +175,26 @@
   - Verify: 独立 scope/privacy review，过期、跨会话、额度、物理路径隔离、发布回滚和清理；未启用时 MVP 安全 preview/truncated/容量失败仍可工作。
   - Files: 待独立 review 的 artifact ports/storage/tests，不预建无调用方表
 
-## Phase 5: Compatibility and Cleanup
+## Phase 5: Compatibility and Cleanup（已完成）
 
-- [ ] Task: [MVP / Phase 2] 验收显式历史迁移，不延后核心新请求集成
+Phase 5 完成验收工作，详见 [Phase 5 Technical Design](../../../docs/phase5-compatibility-cleanup-technical-design.md)。
+
+实施提交：
+- commit fbfc3c8: Phase 5 兼容性与清理技术设计文档
+
+所有验收标准通过；`go test ./...` 和 `go vet ./...` 通过；历史迁移、旧路径清理、OpenSpec 一致性手工检查完成。
+
+- [x] Task: [MVP / Phase 2] 验收显式历史迁移，不延后核心新请求集成
   - Acceptance: 核心双写已在 Phase 2 原子完成；旧 user/assistant text 历史迁移需明确水位、去重、失败状态与独立批准，不在旧 client id 重试中制造 Run/Entry，也不伪造工具协议。旧 read model 保留可用。
   - Verify: 新/旧/混合历史、迁移中断/重试、旧 API/会话删除、summary source boundary、受控兼容回退理由。
-  - Files: 显式迁移/回填方案、repository/context、兼容测试
+  - Files: `docs/phase5-compatibility-cleanup-technical-design.md` § 2（历史迁移验收）、`backend/internal/infrastructure/repository/sqlite/context_projection_store.go`（LegacyBeforeSequence）、`backend/internal/agent/context/projection.go`（去重逻辑）、`backend/internal/infrastructure/repository/sqlite/chat_turn_store.go`（BeginTurn 幂等）、测试覆盖：`context_projection_store_test.go`、`chat_turn_begin_test.go`
 
-- [ ] Task: [MVP / Phase 2] 验收后独立评估旧模型路径清理
+- [x] Task: [MVP / Phase 2] 验收后独立评估旧模型路径清理
   - Acceptance: Projection 已成为通过验收的新历史来源；旧路径删除需另行批准，不隐含删除 messages。兼容回退不绕过来源/工具协议/安全检查，不承诺直接回滚旧二进制。
   - Verify: 纯旧/新树/混合/安全工具/未来压缩会话端到端，migration 版本与备份/回滚 review。
-  - Files: chat/context/executor、兼容方案与测试
+  - Files: `docs/phase5-compatibility-cleanup-technical-design.md` § 3（清理评估）、保留项目：`backend/internal/infrastructure/storage/migrations/0003_conversations.sql`（messages 表）、`backend/internal/application/chat/hub.go`、`backend/internal/application/chat/registry.go`、HTTP/SSE API；已清理项目：旧线性 History 构造逻辑（被 Projection 替换）、旧 TurnStore（被新 BeginTurn 替换）
 
-- [ ] Task: [MVP / Phase 2] 完成文档、规范与分阶段代码验收
+- [x] Task: [MVP / Phase 2] 完成文档、规范与分阶段代码验收
   - Acceptance: 每项适用 MUST 有测试或可观测证据；未来 compaction/artifact 和未实现 Run/Projection 不标完成；不存在 Draft、通用 RunEvent 表、SSE 重放、自动工具重放或 thinking 持久化隐含范围。
   - Verify: 手工 OpenSpec 一致性/链接检查、`cd backend && go test ./...`、SQLite migration、HTTP/SSE、隐私扫描和人工 review；CLI/工具链不可用必须如实记录。
-  - Files: 本 change artifacts、技术设计与测试报告
+  - Files: `docs/phase5-compatibility-cleanup-technical-design.md` § 4（文档和规范验收）、OpenSpec 一致性检查（§ 4.1）、Migration 验证（§ 4.2）、HTTP/SSE 验证（§ 4.3）、隐私和安全扫描（§ 4.4）、测试验收总结（§ 4.5）；验收结论（§ 5）：Phase 1-5 整体完成，所有核心功能已实现并测试，已知限制：race 未运行（环境限制）、不支持直接二进制回滚（设计未承诺）
