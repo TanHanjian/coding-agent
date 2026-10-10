@@ -1,6 +1,5 @@
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport } from 'ai'
-import type { UIMessage } from 'ai'
 import { useEffect, useRef, useState } from 'react'
 import type { FormEvent, KeyboardEvent } from 'react'
 import {
@@ -16,13 +15,14 @@ import {
   Wrench,
 } from 'lucide-react'
 import { cancelGeneration } from '../chat-api'
-import type { Conversation } from '../types'
+import type { ChatMessage, Conversation } from '../types'
+import { messageFailureText } from '../types'
 import { MarkdownContent } from './MarkdownContent'
 import { ToolActivity } from './ToolActivity'
 
 type Props = {
   conversation: Conversation
-  initialMessages: UIMessage[]
+  initialMessages: ChatMessage[]
   isLoadingHistory: boolean
   onFinished: () => void
 }
@@ -96,7 +96,7 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
 
   const [transport] = useState(
     () =>
-      new DefaultChatTransport({
+      new DefaultChatTransport<ChatMessage>({
         api: '/api/v1/chat',
         prepareSendMessagesRequest: ({ id, messages }) => ({
           body: { id, message: messages.at(-1) },
@@ -109,7 +109,7 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
       }),
   )
 
-  const { messages, sendMessage, status, stop, error } = useChat({
+  const { messages, sendMessage, status, stop, error } = useChat<ChatMessage>({
     id: conversation.id,
     messages: initialMessages,
     transport,
@@ -220,6 +220,7 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
 
           {messages.map((message) => {
             const content = messageText(message)
+            const failureText = messageFailureText(message)
             if (!content && message.role !== 'assistant') return null
             const isLatestAssistant = message.role === 'assistant' && message.id === messages.at(-1)?.id
             const isWaitingForText = isLatestAssistant && isGenerating
@@ -275,13 +276,19 @@ export function ChatPane({ conversation, initialMessages, isLoadingHistory, onFi
                         return null
                       })}
 
+                      {failureText ? (
+                        <div className="chat-error-banner" role="alert">
+                          <span>{failureText}</span>
+                        </div>
+                      ) : null}
+
                       {!content && isWaitingForText ? (
                         <div className="typing-indicator">
                           <span className="typing-dot" />
                           <span className="typing-dot" />
                           <span className="typing-dot" />
                         </div>
-                      ) : !content && !isWaitingForText ? (
+                      ) : !content && !isWaitingForText && !failureText ? (
                         <p className="assistant-failure">生成中断或失败，请重新尝试发送。</p>
                       ) : null}
                     </div>

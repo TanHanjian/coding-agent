@@ -1,269 +1,159 @@
-# 上下文工程设计与实施计划
+# 上下文工程设计与实施计划（Graph-only）
 
-- 状态：Draft / 待 review；不是实现完成声明，也不授权代码修改。
-- 优先目标：控制长对话和工具循环的上下文增长，跨轮复用会话摘要。
-- 已确认：独立编写本方案；允许超大工具结果本地临时落盘、会话隔离、到期清理。
-- 后续目标：长期记忆持久化；本阶段只定义边界，不接入第三方记忆服务。
-- 关联：[CozeLoop 观测方案](cozeloop-integration-plan.md)、[平台技术设计](cozeloop-platform-integration-technical-design.md)。
+- 状态：Graph 预算防护方案与实施已获用户批准，代码与文档已落地；review 的 3 项发现已修复，修复后的全量及专项复验通过。
+- 当前运行时：Eino v0.9.19 Graph Runtime 与 compose callbacks；后续上下文工程继续围绕 Graph，不以 ADK 迁移为前置。
+- 现状：Entry Tree projection 与持久化 compaction 已投产；本次新增实际模型调用前的预算检查和受控拒绝。
+- 本次范围：完整文本请求估算、Graph 每次模型调用检查、摘要调用检查、输出上限、终态与安全反馈。运行内缩减、artifact 和运行内摘要属于后续设计，尚未实施。
+- 验证：全量 `go test ./...`、`go vet ./...`、核心包 10 次随机顺序回归、前端 TypeScript 与相关测试、OpenSpec strict 校验通过；竞态检测受当前 CGO 环境限制，生产 token 精度与端点兼容性另行校准。
+- 关联：[Graph 预算技术设计](graph-model-budget-technical-design.md)、[CozeLoop 观测方案](cozeloop-integration-plan.md)、[平台技术设计](cozeloop-platform-integration-technical-design.md)。
 
 ## 1. 当前状态与问题
 
-当前依赖为 Eino v0.9.19。Executor 仍使用 Graph Runtime 和 compose callbacks；ADK 是建议的后续运行内接入路径，不是当前已完成状态。已有工作区变更不由本方案覆盖或回退。
+生产装配见 `backend/cmd/server/main.go` 的 `newChatExecutor`。ContextManager 已接入 ProjectionReader、预算策略、边界选择、摘要协调器和 SQLite CompactionAdapter；不再将默认构造器的历史透传行为描述为生产现状。
 
-ContextManager.Prepare 已预留预算、历史选择、摘要、渲染的流程，但默认 NewManager 回退到全量历史透传。预算、选择、摘要协调和摘要存储仍有未实现部分。历史重建目前只转换持久化的 user/assistant 可见文本，不恢复工具消息。
+`AgentRunRepository.ReadProjection` 在同一事务快照中校验 conversation/run/user、active head 和闭合历史路径，排除当前用户 Entry，并将树接入之前的 legacy 可见历史纳入兼容投影。树接入后的历史以 Entry Tree 路径和安全工具事实投影为来源，不能描述为仅恢复 user/assistant 可见文本。
 
-已有 conversation_context_summaries 表结构及 ContextSummaryRecord（covered_sequence），不等于摘要功能已经生效。当前结构化摘要包含目标、事实、决策、约束、待确认问题；没有明确的进行中任务字段。
+持久化摘要由 `kind=compaction` 的 Entry 承载。`conversation_context_summaries`、`ContextSummaryRecord.covered_sequence` 属于旧表或内部兼容表示，不是当前生产摘要的权威边界；树上的边界使用 Entry ID、路径和 head/version。sequence 仅用于 legacy 覆盖边界，不能推导树 parent 或 compaction cutoff。
 
-具体问题：
+Graph 工具循环仍累积 assistant tool calls/results。当前已在 `chat_model` 的 StatePreHandler 中对累计输入逐次检查，超限或计数返回错误时停止调用；该防护不会自动缩减消息。跨轮 compaction 和实际调用 guard 是两个边界：历史准备通过，不代表渲染后的 Prompt 或后续工具轮次一定可以调用模型。
 
-1. 历史随轮次增长，模型调用成本和超限风险持续增加。
-2. 首轮裁剪无法控制同一次 Run 中后续工具结果和工具参数的增长。
-3. 仅运行内摘要会在下一轮加载完整历史后失效。
-4. 可见聊天记录、临时工具材料、会话摘要、长期记忆缺少明确的数据生命周期边界。
+## 2. 范围与数据生命周期
 
-## 2. 范围与非目标
-
-本阶段设计：调用前预算、运行内工具结果缩减、会话历史摘要、摘要持久化、临时 artifact 读回与清理、失败策略、验收和观测。
-
-不包含：永久保存所有原始工具轨迹、恢复完整工具卡片、完整 Run checkpoint 恢复、第三方记忆服务部署、UI 重构、在本次文档更新中迁移 ADK。
-
-### 数据分层
-
-| 数据 | 用途 | 生命周期与恢复 |
+| 数据 | 当前用途与状态 | 生命周期与恢复 |
 | --- | --- | --- |
-| 原始可见聊天记录 | 用户会话记录、重建摘要来源 | 沿用现有 SQLite 规则，不因压缩覆盖或删除 |
-| 临时工具 artifact | 保存允许落盘的大结果，按需读回 | 独立受限目录与元数据，有限 TTL；不是永久工具档案 |
-| 会话摘要 | 当前会话目标、进展与决策 | SQLite 持久化，绑定可见消息覆盖水位，可重建 |
-| 运行内压缩消息 | 降低一次 Run 的工具循环成本 | 默认仅该 Run 有效，不直接映射为可见聊天摘要 |
-| 长期记忆 | 跨会话的稳定偏好、事实、经验 | 后续独立设计提取、来源、更新、遗忘和检索 |
+| 可见聊天记录 | 已有用户会话记录 | 沿用 SQLite 规则，不因压缩删除；仅 legacy 区段按 sequence 兼容恢复 |
+| Entry Tree 与安全工具事实 | 已投产的历史路径与 projection 来源 | 原始事实保留，按 active path 和协议边界恢复；不等于永久保存原始工具 payload |
+| compaction Entry | 已投产的结构化摘要与边界 | SQLite 持久化，验证 FirstKeptEntryID 与当前路径，使用 CAS/head version |
+| Graph 运行内消息 | 实际调用 guard 的检查对象 | 每 Run 独立累积，尚未接入运行内缩减或摘要 |
+| 临时工具 artifact | 后续设计，已允许有限本地落盘 | 会话隔离、配额、TTL、受控读回；尚未实施 |
+| 长期记忆 | 后续独立目标 | 定义提取、来源、更新、遗忘和有界检索；尚未接入第三方服务 |
 
-## 3. 锁定版本能力核查
+本次不交付完整 Run checkpoint、永久原始工具档案、工具卡片完整恢复、第三方记忆服务或 ADK 迁移。
 
-核查依据为 Go module cache 中 github.com/cloudwego/eino@v0.9.19 源码，不以最新网站示例替代版本事实。
-
-| 能力 | v0.9.19 事实 | 项目需要补充 |
-| --- | --- | --- |
-| summarization | BeforeModelRewriteState 改写 Agent state；提供 Finalize、Callback 和 Summarize | 预算配置、结构校验、持久化协议 |
-| reduction | 工具返回时截断，模型调用前 clear；支持 Backend、ClearPostProcess | 受限存储、读回工具、会话隔离与硬预算复检 |
-| 文件卸载 | reduction Backend 只要求 Write | 不能假设自动有 read_file、授权或 TTL |
-| 临时状态 | rewrite state 会影响当前 Agent 后续迭代 | 不等于自动跨会话存储 |
-
-关键边界：
-
-- summarization 默认触发阈值为 160000 token，reduction clear 默认也是 160000；不能照搬到较小窗口模型。
-- summarization token 条件是严格大于阈值。只设置消息数条件而让 ContextTokens 为零，仍可能因 token 条件立即触发；必须显式配置。
-- 默认文本估算主要基于字节长度，不足以作为中文、代码、多模态输入的精确计数。
-- reduction 默认截断上限为 50000 字节，不是 token；默认 clear 保留工具参数，并不保证清理后低于预算。
-- 默认流式缩减仍可能累计完整工具输出，不提供严格内存上限；大结果工具应在生产端限制输出或直接生成 artifact。
-- summarization 的 TranscriptFilePath 只插入位置提示，不负责实际写文件。
-- Callback 可观察压缩前后消息，但发生在 hook 返回之前，不是数据库提交或 Run 成功通知。
-- 自定义 Finalize 接管最终消息构造，不能假设默认的历史保留和 transcript 提示仍会自动执行。
-- 两类 BeforeModelRewriteState 按注册顺序运行；建议先 reduction 再 summarization，最终预算检查应覆盖所有临时注入后的实际模型输入。
-
-源码依据：[summarization](https://github.com/cloudwego/eino/blob/v0.9.19/adk/middlewares/summarization/summarization.go)、[reduction](https://github.com/cloudwego/eino/blob/v0.9.19/adk/middlewares/reduction/reduction.go)、[handler](https://github.com/cloudwego/eino/blob/v0.9.19/adk/handler.go)、[filesystem](https://github.com/cloudwego/eino/blob/v0.9.19/adk/filesystem/backend.go)。
-
-## 4. 建议架构与职责
+## 3. Graph 架构与职责
 
 ```text
-SQLite 可见历史 + 已提交会话摘要
-                |
-                v
-ContextManager：载入摘要 → 选择未覆盖历史 → 分配初始预算
-                |
-                v
-Prompt 组装：可信指令 + 摘要数据 + 最近历史 + 当前任务材料
-                |
-                v
-运行层：工具结果缩减 → 清理旧结果 → 必要时运行内摘要
-                |
-                v
-最终模型输入预算复检 → ChatModel（每次调用）
-                |
-                v
-可见消息正常持久化；后续按已提交消息更新会话摘要
+SQLite Entry Tree + legacy 兼容历史 + 持久化 compaction
+                        |
+                        v
+ContextManager：projection → 历史预算与合法边界 → 摘要/复用 → compaction 提交
+                        |
+                        v
+Prompt 模板：可信指令 + 摘要数据 + 保留历史 + 当前请求/访谈材料
+                        |
+                        v
+Graph chat_model StatePreHandler：累积消息 → 完整请求估算 → guard
+                        |
+           预算内       |       超限/计数错误
+                        v
+                 模型调用 / 现有 Run finalizer
+                        |
+                        v
+工具执行 → Recorder 提交事实 → 回到逐次检查边界
 ```
 
-建议复用 ADK 原生 reduction / summarization，而非重新实现同类工具循环策略。前提是完成并验证 ADK 运行内核迁移；当前 Graph 不能直接把这些 handler 当作 compose callback 注册。
+server 将同一经验证的预算快照注入历史准备、Graph guard、摘要 invoker 和 OpenAI 客户端输出 cap。摘要调用检查完成构造的摘要 Prompt，不绑定或计入聊天工具 schema。live eval candidate 也接入 Graph guard；judge 的配置与调用独立，未纳入该聊天预算策略。
 
-不为过渡期另建一套完整 Graph 压缩内核。应用层预算、会话摘要和受限 artifact 存储可先做，运行内 middleware 接入以 ADK 就绪为门槛。该顺序仍需用户 review。
+一次 Build 读取工具 Info 并冻结参数 schema；WithTools、工具节点和计数共享快照，避免动态 Info 导致绑定和检查不一致。guard 不保存会话消息，调用序号保存在各 Run 的 agentState。
 
-### 防止双重摘要
+## 4. 当前预算契约与精度限制
 
-- 会话摘要协调器只总结已提交的可见聊天前缀，覆盖范围使用数据库 sequence。
-- ADK 摘要只压缩本次 Run 的工作消息，包含临时工具交互；其输出不直接写入 conversation_context_summaries。
-- 本轮输入中的旧会话摘要应被标记为已有背景，不应再次伪装成新用户事实。
-- 运行内摘要也应保留当前目标、约束和明确决策，但工具结果仍是低信任数据，不能升级为系统指令。
-- 若未来需要保留只存在于工具轨迹中的工作状态，另设计来源可追溯的状态投影；本阶段不承诺恢复该部分。
+判定式为：
 
-## 5. 预算与压缩契约
+`estimated_input_tokens + output_limit_tokens + safety_margin_tokens <= context_window_tokens`
 
-每次实际模型输入都满足以下估算约束：
+等于边界允许，超过边界拒绝；实现通过减法计算剩余输入容量以避免加法溢出。取消优先。首版拒绝时不自动重试、不截断请求、不额外调用摘要模型恢复。
 
-`输入估算 + 输出预留 + 安全余量 <= 模型上下文窗口`
+四项预算配置均须显式填写：`OPENAI_CONTEXT_WINDOW_TOKENS`、`OPENAI_MAX_OUTPUT_TOKENS`、`OPENAI_CONTEXT_SAFETY_MARGIN_TOKENS`、`OPENAI_OUTPUT_LIMIT_MODE`。配置名称与规则已确定，无生产默认值；实际部署的窗口、输出上限、余量数值及端点模式兼容性仍须确认。余量可显式为零；窗口和输出上限必须为正，输出加余量必须小于窗口。输出模式只能为 `max_tokens` 或 `max_completion_tokens`，客户端只发送所选的一项，数值与输出预留一致。没有模型时保留不启用聊天的路径；模型已配置但预算不完整时拒绝创建聊天运行时。
 
-输入包括：system 指令、工具 schema、会话摘要、当前用户输入、近期历史、任务材料、工具参数与结果，以及临时注入的内容。工具结果额度不是窗口之外的额外额度。
+当前计数器为 `openai-text-json-bytes-v1`：文本按 UTF-8 字节长度，完整请求按消息和工具定义构造的 JSON 表示经 `json.Marshal` 后取字节长度。覆盖 role/content/name、reasoning_content、tool-call index/ID/函数/arguments、tool_call_id、工具名称/描述/完整参数 schema 和 JSON 结构；排除适配器不发送的 Message.Extra/工具本地元数据。不支持的多模态、未知角色、nil 消息等返回计数错误。
 
-- 模型窗口和输出上限来自明确模型配置；未知窗口不得静默假设为原生默认阈值。
-- 摘要模型也必须单独计算输入预算；源历史过长时分批增量摘要，不把全部历史直接塞给摘要模型。
-- 软阈值触发缩减；硬阈值决定是否可以发起模型调用。阈值、计数器版本、安全余量均可观测。
-- 优先缩减可恢复的大工具材料，再清理旧工具结果，最后摘要旧历史。
-- 保留可信指令、当前用户输入和明确的关键约束；不得为满足预算悄悄截断任务要求。
-- 用户输入或工具 schema 等不可裁剪部分自身超限时，明确返回上下文容量错误，要求缩小输入或工具集合。
-- 工具消息按完整 assistant tool-call 与对应 tool-result 组处理；支持同一 assistant 的多个工具调用，不能制造悬空响应。
-- 文件读回结果也受预算限制，支持分页或范围读取；不得读回后再次全量卸载形成无限循环。
-- 缩减尝试次数必须有界；最终仍超限则终止该模型调用，不无限重试。
+该 JSON 表示不是整个 provider HTTP 请求的逐字节复刻，也不是特定模型 tokenizer。字节估算可能较早拒绝中文、代码和大 JSON；provider 隐含开销、reasoning 计费与真实窗口需要结合安全余量、端点能力和 Usage 校准，不能宣称数学保证永不超窗或已获得成本/质量收益。历史准备仍有独立粗估与分区策略，不能用它替代最终 guard。
 
-精确 token 数受供应商封装影响，预算检查不宣称绝对精确。实际 Usage 用于校准；供应商仍报超限时走有界缩减/明确失败，不重复执行有副作用的工具。
+review 的三项发现均已关闭：schema/custom estimator panic 在计数与 schema 边界捕获并安全拒绝；快照任意 JSON 值使用空容器解码与 `UseNumber` 保留大数、保持深复制隔离；frozen 工具保留全部八种可实现接口组合。数字/隔离、错误正文和真实 ToolsNode 执行路径测试，以及修复后全量回归均通过。
 
-### 5.1 压缩边界算法
+## 5. 持久化 compaction 与后续压缩契约
 
-边界由程序计算，LLM 只总结已选定的内容，不负责决定删除哪些消息。
+当前 `EntryCompaction` 包含 `Schema`（structured-v1）、`FirstKeptEntryID`、`SourceBoundary`、`TokensBefore` 和 `Summary`；`CompactionSummary` 包含 version、goal、confirmedFacts、decisions、constraints、openQuestions，以及兼容 context 字段。进行中任务/未完成项尚无独立字段，后续 schema 演进需独立设计。
 
-1. 读取一致的历史快照、旧摘要及覆盖水位，验证消息结构。
-2. 可见历史按完整用户轮次分组，以轮次关联和持久化终态为依据；不能假设任意相邻两条消息就是一轮。运行内至少将含 ToolCall 的 assistant 消息及其全部匹配 ToolResult 视为不可拆分组。
-3. 模型窗口减去输出预留、安全余量、固定指令、工具 schema、当前请求、任务材料和摘要预留后，得到近期历史预算；各部分不能重复扣减。
-4. 从最新完整组向前累加估算，保留能放下的最大连续后缀。遇到放不下的组就停止，不跳过它去选更早的小组。剩余可压缩前缀的最后一个合法边界就是 cutoff。
-5. 当前请求和未结束的工具组属于保护区，不进入摘要源。若必须保留的内容本身超预算，先缩减大工具正文；仍不足则明确失败，不拆组或偷偷删除要求。
-6. 以旧摘要加新移出的完整前缀生成候选摘要。重建输入后再校验消息协议和预算；校验或保存失败不得发布候选水位。
+当前 Manager 读取 projection、选择前缀/保留后缀、生成或复用摘要，通过 CompactionAdapter 写入 Entry Tree。写入以 ExpectedLeaf/ExpectedVersion 校验；摘要生成失败不追加候选 compaction。当前 Manager 对结构化 conflict 有使用本轮未持久化摘要继续的路径，不能将所有竞争情况描述成“摘要已经提交”。旧摘要表的 covered_sequence 不代表树上的提交边界。
 
-仅在软阈值触发或硬预算要求时摘要；没有可压缩前缀时直接复用旧摘要。完整用户轮次优先保证语义连续性；当前轮次内部工具循环过长时，可压缩已结束的完整工具组，但保留当前请求与必要任务状态。
+以下是后续 Graph 压缩的契约和验收目标，不是本次新增能力的完成声明：
 
-```text
-已有 S20：覆盖可见历史至 sequence=20
-未覆盖历史：[完整组 21..24] [完整组 25..30] | [完整组 31..34] [当前轮次]
-摘要输入：S20 + 21..30 的已提交历史
-候选水位：30；保留区起点：31
-成功提交后：S30 + sequence>30 的近期历史
-```
+1. 程序决定删除边界，LLM 只总结选定前缀。树历史按稳定 Entry ID 和来源选择；运行内按快照及完整工具组选择，不将消息数组下标写入持久化边界。
+2. 保留最大连续近期后缀，不跳过放不下的组选更早的小组；保护可信指令、当前用户请求和未完成工具组。
+3. assistant 的多个 tool calls 与匹配结果整体处理，拒绝孤立、重复、缺失响应；摘要不能插入调用及响应之间。缩减结果正文仍须保留角色、ID 与协议结构。
+4. 摘要来源、实际移除前缀和 SourceBoundary 必须一致；验证路径、结构、预算后提交。原始记录保留，候选失败不得发布新边界。
+5. 过长摘要源按合法边界分批，重试有界；中间摘要不提前发布最终边界。该分批能力仍需独立实现/验证。
+6. 会话 compaction 与未来运行内摘要分离。运行内工具材料不直接写入旧 summary 表，也不自动成为持久化事实；长期保存需使用来源可追溯的安全投影。
+7. 未来缩减优先处理可恢复的大工具材料，再处理旧结果与历史；重建实际输入后重新经过同一 guard。不可裁剪部分仍超限则明确失败。
 
-sequence 可以有间隙；连续前缀指同一会话有序的实际消息，不以数组长度推算水位。运行内使用稳定消息/组标识及快照版本，数组下标仅用于该快照内定位；重写后重新分组，不能将旧下标写入数据库水位。
+## 6. 临时工具 artifact（后续，尚未实施）
 
-### 5.2 工具协议保护
+已允许有限本地落盘；具体 TTL、容量和工具白名单仍待确定，不能据此宣称 artifact 已上线。
 
-- 按 tool_call_id 检查全部结果，拒绝重复、孤立和缺失响应；同一 assistant 的多个调用整体处理，并行结果按当前供应商协议排列。
-- 结果缩减只替换正文，保留角色和调用 ID；历史摘要整体替换旧工具组，不留下仍等待响应的 ToolCall。
-- 摘要不能插入调用及其响应之间。工具尚在执行时等待结果；执行已中止时只能按运行时协议补充明确的中止响应，不伪造成功。
-- 最终结构校验覆盖历史恢复、摘要、临时注入后的实际模型输入，不能只校验摘要前的消息。
+- 只允许经工具策略确认的大文本结果；元数据包含 artifact ID、conversation/run/tool-call ID、创建/过期时间、大小、类型和状态。
+- 服务端生成物理路径，模型使用不透明 ID；写成功才提供有界预览、截断标记和读回入口。
+- 读回绑定当前会话身份，限制分页/范围和单次字节数；不得仅凭模型提供的 conversation ID 授权。
+- 防止路径穿越、符号链接逃逸、跨会话访问和 ID 碰撞；Windows 权限与路径需专项验证。
+- 凭据不得落盘；内容不能自动进入日志、UI 或 Trace。无法可靠清除敏感信息的工具禁用落盘。
+- 设置单文件、单会话、全局配额；采用原子发布、I/O 租约、过期拒绝、会话删除清理、启动扫描与周期清理。
+- 磁盘满、写失败或过期明确反馈，不能伪造完整可读结果；读回仍受最终预算约束，避免无限卸载/读回循环。
 
-### 5.3 增量摘要与 Eino 适配
+后续实施需与既有“禁止原始工具 payload 通用永久持久化”约束协调。本次文档更新不修改 OpenSpec，不将受限 artifact 设计视为既有规范已同步。
 
-待压缩前缀超过摘要模型预算时，按合法边界分批：旧摘要加第一批生成中间摘要，再与下一批合并。每批独立校验输入和输出预算；中间摘要不提前发布最终水位，任一批失败保留原已提交摘要。重试有界，不保证摘要语义无损。
+## 7. ADK 能力调研（历史，未采用）
 
-Eino 原生触发器不替代本节选择器。通过 GenModelInput / Finalize 适配时，必须保证送去总结的前缀与最终移除的前缀完全一致，近期后缀保持原顺序且无重复遗漏。不能只限制 GenModelInput，却让默认 Finalize 替换整段历史。候选摘要超过预留额度时有界重试或失败，不无限移动边界。
+此前核查 Eino v0.9.19 的 ADK summarization/reduction，曾建议先迁移 ADK 再接运行内 middleware；该建议已被 Graph-only 决定替代。以下仅保留版本调研事实，不作为实施依赖：
 
-会话摘要和运行内摘要分别使用数据库水位与运行快照标识。原生 middleware 能否按该契约组合需集成测试验证，不能宣称默认行为已自动满足本算法。
+| 能力 | v0.9.19 调研事实 |
+| --- | --- |
+| summarization | BeforeModelRewriteState 改写 Agent state，提供 Finalize、Callback、Summarize；默认 ContextTokens 为 160000，触发条件严格大于阈值 |
+| reduction | 工具返回时截断、调用前 clear；默认 clear 为 160000，截断上限为 50000 字节，默认保留工具参数 |
+| 文件卸载 | Backend 只要求 Write，不自动提供读回工具、身份校验或 TTL |
+| 临时状态 | rewrite 影响当前 Agent 迭代，不等于跨轮持久化；流式缩减仍可能累计完整输出 |
+| 适配边界 | TranscriptFilePath 只插入提示；Callback 不是提交通知；自定义 Finalize 接管最终消息；handler 不能直接注册为 compose callback |
 
-## 6. 会话摘要持久化
+默认字节估算与阈值不等于项目模型的精确计数。只设置消息数而让 ContextTokens 为零可能立即触发；多种 rewrite 按注册顺序执行。未来借鉴算法仍需在 Graph 边界实现并独立验证，不因此引入第二套运行内核。
 
-优先复用已有表与结构化摘要 schema，不重复创建同义存储。
+源码：[summarization](https://github.com/cloudwego/eino/blob/v0.9.19/adk/middlewares/summarization/summarization.go)、[reduction](https://github.com/cloudwego/eino/blob/v0.9.19/adk/middlewares/reduction/reduction.go)、[handler](https://github.com/cloudwego/eino/blob/v0.9.19/adk/handler.go)、[filesystem](https://github.com/cloudwego/eino/blob/v0.9.19/adk/filesystem/backend.go)。
 
-摘要内容：目标、已确认事实、决策、约束、待确认问题；建议下一版 schema 增加进行中任务和未完成项。模型推断必须区别于用户明确确认，摘要不包含隐藏推理、凭据或完整工具 payload。
+## 8. 失败、观测与回滚
 
-持久化规则：
+预算超限与计数失败使用应用层稳定码 `context_budget_exceeded`、`context_counting_failed`，经现有 RunService/FinishAssistant 收尾。取消和持久化失败保持优先级；failed 不提交 FinalMessage/FinalEntryID，已持久化可见文本和闭合工具事实保留，开放组遵守既有 head/CAS 规则。终态提交失败不广播未提交终态。
 
-1. 读取有效摘要及其 covered_sequence，只加载其后需要的历史；保留近期完整对话范围。
-2. 增量输入为旧摘要及新增的待覆盖已提交前缀，不重复总结已覆盖原文。
-3. 水位必须落在已提交的完整可见对话边界，不通过 ADK 消息数组下标推断数据库 sequence。
-4. 建议水位只覆盖已进入终态且已提交的连续对话前缀。失败/取消轮次可以作为“中断事实”纳入摘要，保留用户请求、明确标识未完成，不把部分输出推断为成功；仍在生成的轮次不能覆盖。该规则避免中间失败轮次永久阻塞单一水位，待 review 确认。
-5. 先生成、校验结构和预算，再原子提交摘要及水位；失败不得只推进水位。
-6. 通过同会话串行控制或 compare-and-swap 防止旧摘要覆盖新摘要。现有表若不能满足版本比较，应新增迁移，不修改已发布迁移。
-7. 旧 schema、源历史被修改/删除、模型切换导致预算改变时，验证并失效或重新裁剪；不盲目复用。
-8. 无可用摘要时只能在预算内使用完整近期对话并明确标记信息缺失；无法保证任务关键上下文时终止并提示，不能静默装作完整记忆。
+generation snapshot/update、HTTP SSE 和历史消息使用安全分类；前端实时与刷新历史展示固定文案，不透传 provider 错误或原始材料。
 
-原始可见历史仍是来源；本地摘要包含用户内容，不是脱敏指标，不自动上传 CozeLoop。
+guard 的本地 debug 日志记录阶段、调用序号、计数器版本、估算、窗口、输出预留、余量、判定原因和耗时，不记录正文、凭据或主机路径。后续压缩率、artifact 生命周期与质量指标是待补能力，不能列为现有观测。CozeLoop 是可选出口，不新增外部发送权限，也不参与预算判定。
 
-## 7. 临时工具 artifact
+关闭未来摘要/卸载策略仍须保留最终 guard；全量无检查透传不是安全回滚。摘要可失效后重建，不删除原始聊天；未来 artifact 停止写入后仍须履行既定清理策略。
 
-本节是已确认的“允许有限本地落盘”的设计细化，具体期限和容量仍待确认。
+## 9. 实施与验证状态
 
-### 写入与读回
+实现映射以当前 Graph 装配为准，详细契约与 A1–A16 见 [Graph 预算技术设计](graph-model-budget-technical-design.md)：
 
-- 只允许经过工具级策略确认的超大文本结果落盘；不是所有工具参数、结果无条件写盘。
-- 元数据至少包含 artifact ID、conversation ID、run ID、tool call ID、创建/过期时间、大小、内容类型和可用状态。
-- 物理路径由服务端生成；模型只使用不透明 artifact ID 或受控虚拟路径，不接受任意主机路径。
-- 工具提示保留有界预览、截断标记和读回入口；没有写成功不能宣称完整结果可读。
-- 读回工具绑定当前会话身份，限制单次读取量；不能只凭模型提供的 conversation ID 授权。
-- 防止路径穿越、符号链接逃逸、ID 碰撞、跨会话访问；Windows 路径和权限需专项测试，不照搬 /tmp。
-- 凭据不得落盘；对无法可靠清除敏感信息的工具禁用落盘。用户学习内容只能留在受控本地目录，不自动进入日志或 Trace。
+| 实现文件 | 职责 |
+| --- | --- |
+| `backend/internal/infrastructure/config/budget.go`、`backend/internal/infrastructure/config/config.go`、`backend/.env.example` | 四显式配置、完整校验、无生产预算默认值 |
+| `backend/internal/agent/context/model_budget.go`、`backend/internal/agent/context/request_estimator.go` | 调用 guard、输入分区、JSON 字节 v1 计数、schema 快照及 recovery/数字修复 |
+| `backend/internal/agent/interview/builder.go`、`backend/internal/agent/interview/frozen_tools.go` | Graph 逐次检查、绑定与计数共享快照；保留原工具执行接口 |
+| `backend/cmd/server/main.go`、`backend/internal/infrastructure/agent/openai/model.go` | 同源预算、摘要 guard、唯一输出 cap |
+| `backend/internal/application/chat/model_errors.go`、`backend/internal/application/chat/run_service.go`、`backend/internal/application/chat/generation.go`、`backend/internal/application/chat/generation_lease.go` | 安全分类、既有事务收尾、终态传播 |
+| `backend/internal/transport/httpchat/handler.go`、`web/src/features/chat/types.ts`、`web/src/features/chat/components/ChatPane.tsx` | SSE 与刷新历史的固定安全反馈 |
+| `backend/cmd/eval/main.go`、`backend/internal/eval/runner.go` | live candidate 接入 guard；judge 独立 |
+| `backend/internal/infrastructure/repository/sqlite/context_projection_store.go`、`backend/internal/agent/context/manager_compaction.go`、`backend/internal/infrastructure/repository/sqlite/compaction_adapter.go` | 已投产的 projection 与 compaction 路径 |
 
-### 生命周期
-
-- 到期后新读取明确返回 expired，不把缺失文件当空结果。
-- 读写进行中的文件应受租约保护；清理不能删除进行中 I/O，租约结束后及时回收。
-- 会话删除触发文件及元数据清理；启动扫描和周期清理处理崩溃遗留与孤儿文件。
-- 文件写入采用临时写入与原子发布；元数据和文件无法跨存储原子提交时，使用可恢复状态并清理不完整写入。
-- 设置单文件、单会话及全局配额。达到配额、磁盘写失败时，显式返回受限结果或终止相关调用；不静默删除活跃材料。
-- 摘要不能把临时 artifact 当永久证据；必要结论需以受限文本保存，引用必须允许过期。
-
-与现有 OpenSpec 的关系：step-4 的设计和规范禁止原始工具 payload 持久化。实施前必须将该约束细化为“禁止通用永久保存；允许本方案限定的临时 artifact”，同时保留日志、UI、Trace 的既有隐私限制。本次不把既有规范直接改成已实施事实。
-
-## 8. 长期记忆预留
-
-后续记忆模块独立于会话摘要存储，至少具备：用户/项目作用域、来源、更新时间、有效性、删除能力和有界检索结果。
-
-- 从已提交对话中筛选稳定事实，不直接把全部摘要或原始工具文件同步成记忆。
-- 记忆候选与正式记忆分离；用户纠正、事实冲突、过期和删除必须可处理。
-- 检索内容占用同一模型输入预算，按低信任数据注入，不能覆盖系统规则或最新用户要求。
-- 后续可评估本地实现或 Mem0；只有关系和时效性需求明确时再评估 Graphiti。
-- 本阶段不新增记忆服务依赖，不承诺第三方协议或存储 schema。
-
-## 9. 失败、安全与回滚
-
-| 风险 | 影响 | 缓解 |
+| 工作 | 当前状态 | 剩余检查 |
 | --- | --- | --- |
-| 摘要遗漏或扭曲约束 | 行为偏离 | 结构校验、关键约束保护、长对话回归集 |
-| token 估算偏差 | 调用超限 | 安全余量、最终复检、Usage 校准 |
-| 摘要写入失败或竞争 | 跨轮重复/丢失历史 | 原子水位、CAS/串行控制、保留原始记录 |
-| artifact 泄露或无限增长 | 隐私与磁盘风险 | 会话隔离、工具白名单、配额、TTL |
-| 原生默认配置不适合模型 | 过早/过迟压缩 | 显式阈值和版本锁定测试 |
-| ADK 迁移未完成 | middleware 无接入位置 | 运行内阶段阻塞，不偷偷扩大本次实现范围 |
+| Entry Tree projection、持久化 compaction | 已投产 | 持续核对边界、竞争、失败和摘要质量 |
+| 完整文本请求估算、四显式 env、输出 cap | 已实施并验证 | provider 精度、真实端点模式兼容性 |
+| Graph 逐次 guard、摘要 guard、live eval candidate guard | 已实施，调用边界 review 通过 | judge 独立；生产 Usage 校准另行进行 |
+| 安全终态、SSE 与历史错误展示 | 已实施，事务/head 和反馈回归通过 | 持续保持原有终态优先级 |
+| 全量 Go、前端与规范验证 | `go test ./...`、`go vet ./...`、TypeScript、相关测试与 strict 校验通过 | 当前 CGO 环境不支持 race；A1–A16 证据见详细技术稿 |
+| Graph 运行内缩减/摘要、artifact | 后续，未实施 | 方案细化、实现和生命周期/协议测试 |
+| 长期记忆 | 后续预留 | 独立定义来源、删除、冲突和检索预算 |
+| review 修复与生产 Usage 校准 | review 三项已修复并复核；校准未完成 | 实际端点参数与 token 精度仍需部署验证 |
 
-关闭摘要/卸载时仍保留最终预算保护；不将全量透传当作安全回滚。旧摘要可失效后重建，不删除原始聊天；新增存储采用兼容迁移。停止新 artifact 写入不影响已存在文件按既定 TTL 清理。Trace 不可用不得影响任何预算决策。
+OpenSpec CLI 已通过 `npx @fission-ai/openspec@1.14.1` 恢复可用，`graph-model-budget-guard` strict 验证通过。该 change 保持未归档，便于用户 review。
 
-## 10. 观测与验收
-
-本地指标为基础，CozeLoop 是可选出口，遵守独立 Trace 开关与授权规则。
-
-记录：输入估算、预算、输出预留、压缩前后估算、缩减原因、耗时、摘要更新/复用/失败、artifact 字节数与过期读回次数、硬预算拒绝次数、实际 Usage。指标与日志不包含摘要正文、工具内容或主机文件路径。
-
-边界诊断另记录摘要版本、旧/候选/已提交水位、保留区起点、组数量和选择原因，区分候选与提交状态。运行内使用独立组标识，不伪装成数据库水位；外部 Trace 标识仍遵守脱敏规则。
-
-验收用例：
-
-- 边界落在多工具组内部时移动到合法边界；缺失、重复、孤立响应被拒绝，近期后缀无重复遗漏。
-- 相同快照、计数器和配置得到相同边界；sequence 有间隙不导致错误推进。
-- 无可压缩前缀不调用摘要模型；超大单组不拆分；分批摘要中途失败不推进水位。
-- 自定义摘要输入与最终移除范围一致；运行内重写后不误用旧下标。
-
-- 中文、代码、长工具参数、大结果、多工具并行返回及 unknown model 配置。
-- 首轮预算内但后续工具循环膨胀：每次调用仍执行最终检查。
-- 摘要模型输入自身超长；摘要失败、格式错误、空摘要和超预算摘要。
-- 重启后复用摘要；水位不重复、不跨越未提交消息；竞争更新不回退。
-- 覆盖“成功→失败/取消→成功”的连续历史：水位可推进，失败被保留为中断事实，不虚构成功工作；既有 SSE 顺序、取消和生成终态不受影响。
-- artifact 读回分页、跨会话拒绝、路径穿越、凭据过滤、过期、磁盘满、写入中崩溃和会话删除。
-- 最近工具消息配对完整；system 约束与当前用户要求不被压缩丢失。
-- 压缩前后关键事实与任务完成率进行对照评测；成本/延迟阈值在基线测量后确认，不预先宣称收益。
-
-## 11. 分阶段实施计划
-
-每阶段开始前需用户确认代码修改；本表不是执行授权。
-
-| 阶段 | 交付 | 完成检查 |
-| --- | --- | --- |
-| P0 方案 review | 确定运行时前置依赖、artifact TTL/配额、摘要降级策略；同步 OpenSpec | 无规范冲突，用户确认 |
-| P1 预算与会话准备 | 模型窗口配置、完整输入计数边界、近期历史选择、最终预算防护 | 超限不会未经检查发给模型 |
-| P2 跨轮摘要 | 增量摘要、schema 校验、SQLite 原子水位与重启复用 | 持久化与失败用例通过 |
-| P3 临时 artifact | 安全存储、读回工具、配额、TTL、清理 | 隔离和生命周期测试通过 |
-| P4 运行内压缩 | ADK 已就绪后接 reduction / summarization，适配最终模型输入检查 | 连续工具循环与消息配对测试通过 |
-| P5 集成 review | 长对话质量回归、Usage 校准、回滚验证 | 无关键约束回归，隐私规则无旁路 |
-
-P1 的实际模型输入复检接入点需随运行时确定；若 ADK 迁移先行，则直接在迁移后的调用边界实现，不并行保留两套压缩内核。
-
-## 12. 待确认事项
-
-1. 是否将 ADK 迁移作为运行内压缩的前置条件（建议是），并确认它的独立实施安排。
-2. artifact TTL、单文件/会话/全局容量；建议先讨论“24 小时、10 MiB / 100 MiB / 1 GiB”作为保守起点，而非已经批准的默认值。
-3. 摘要失败后的交互：仅在关键上下文仍完整且预算内时继续，否则明确暂停并提示，是否接受。
-4. 会话摘要 schema 是否增加进行中任务/未完成项；首版是否接受不跨 Run 恢复完整工具工作状态，以及将已提交的失败/取消轮次作为中断事实纳入摘要。
-
-以上待确认项阻塞对应实现，不阻塞本稿 review。实施责任人和排期在批准方案后确定；不虚构完成日期或审批状态。
+用户已批准本次 Graph 预算实施及文档更新，无需再次以阶段授权为由阻塞。后续需确定 artifact TTL/配额（“24 小时、10 MiB / 100 MiB / 1 GiB”仍仅是讨论起点）、任务状态 schema、运行内缩减策略和质量基线；这些不阻塞已批准预算防护的落地。

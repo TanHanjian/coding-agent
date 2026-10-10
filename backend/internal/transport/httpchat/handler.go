@@ -111,7 +111,7 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 	}
 
 	if subscription.Snapshot.Status != conversation.MessageStatusStreaming {
-		stream.writeTerminal(subscription.Snapshot.Status)
+		stream.writeTerminal(subscription.Snapshot.Status, subscription.Snapshot.ErrorCode)
 		return
 	}
 	if subscription.Updates == nil {
@@ -138,7 +138,7 @@ func streamSubscription(w http.ResponseWriter, r *http.Request, subscription cha
 					return
 				}
 			case chat.GenerationUpdateTerminal:
-				stream.writeTerminal(update.Status)
+				stream.writeTerminal(update.Status, update.ErrorCode)
 				return
 			default:
 				stream.writeError(streamFailedErrorText)
@@ -271,7 +271,7 @@ func (w uiMessageStreamWriter) writeDone() bool {
 	return true
 }
 
-func (s *uiMessageStreamSession) writeTerminal(status conversation.MessageStatus) {
+func (s *uiMessageStreamSession) writeTerminal(status conversation.MessageStatus, errorCode string) {
 	if !s.closeText() {
 		return
 	}
@@ -285,7 +285,7 @@ func (s *uiMessageStreamSession) writeTerminal(status conversation.MessageStatus
 			return
 		}
 	default:
-		if !s.writePart(map[string]string{"type": "error", "errorText": streamFailedErrorText}) {
+		if !s.writePart(map[string]string{"type": "error", "errorText": chat.SafeGenerationErrorText(errorCode)}) {
 			return
 		}
 	}

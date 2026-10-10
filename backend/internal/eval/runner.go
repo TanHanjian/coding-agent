@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/cloudwego/eino/components/model"
+	agentcontext "interview-memory-agent/backend/internal/agent/context"
 	"interview-memory-agent/backend/internal/agent/eino"
 	"interview-memory-agent/backend/internal/agent/interview"
 	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
@@ -32,6 +33,7 @@ type Runner struct {
 	Candidate      model.ToolCallingChatModel
 	Judge          Judge
 	PromptProvider agentprompt.Provider
+	BudgetGuard    *agentcontext.ModelCallGuard
 }
 
 func (r *Runner) RunCase(parent context.Context, c EvalCase, timeout time.Duration) CaseResult {
@@ -105,7 +107,7 @@ func (r *Runner) RunCaseWithMetadata(parent context.Context, c EvalCase, timeout
 		promptProvider = agentprompt.NewLocalPromptProvider()
 	}
 	promptProvider = promptAuditProvider{delegate: promptProvider}
-	builder, err := interview.NewBuilderWithPromptProvider(r.Candidate, promptProvider, tools...)
+	builder, err := interview.NewBuilderWithPromptProvider(r.Candidate, promptProvider, r.BudgetGuard, tools...)
 	if err != nil {
 		result.InfrastructureFailure = true
 		result.Error = err.Error()

@@ -13,6 +13,10 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "test-key")
 	t.Setenv("OPENAI_BASE_URL", "https://example.invalid/v1")
 	t.Setenv("OPENAI_MODEL", "test-model")
+	t.Setenv("OPENAI_CONTEXT_WINDOW_TOKENS", "1000")
+	t.Setenv("OPENAI_MAX_OUTPUT_TOKENS", "100")
+	t.Setenv("OPENAI_CONTEXT_SAFETY_MARGIN_TOKENS", "20")
+	t.Setenv("OPENAI_OUTPUT_LIMIT_MODE", "max_tokens")
 	t.Setenv("COZELOOP_ENABLED", "true")
 	t.Setenv("COZELOOP_EVALUATION_ENABLED", "true")
 	t.Setenv("COZELOOP_EVALUATION_CONTENT_UPLOAD_ENABLED", "false")
@@ -41,6 +45,12 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 	if cfg.OpenAI.APIKey != "test-key" || cfg.OpenAI.BaseURL != "https://example.invalid/v1" || cfg.OpenAI.Model != "test-model" {
 		t.Fatalf("unexpected OpenAI config: %+v", cfg.OpenAI)
 	}
+	if cfg.OpenAI.ContextWindowTokens != 1000 || cfg.OpenAI.MaxOutputTokens != 100 || cfg.OpenAI.SafetyMarginTokens != 20 || !cfg.OpenAI.SafetyMarginConfigured || cfg.OpenAI.OutputLimitMode != "max_tokens" {
+		t.Fatalf("unexpected OpenAI budget config: %+v", cfg.OpenAI)
+	}
+	if err := cfg.ValidateForChat(); err != nil {
+		t.Fatalf("loaded chat config is invalid: %v", err)
+	}
 	if !cfg.CozeLoop.Enabled || !cfg.CozeLoop.EvaluationEnabled || cfg.CozeLoop.EvaluationContentUploadEnabled || cfg.CozeLoop.APIBaseURL != "https://api.coze.cn" || cfg.CozeLoop.WorkspaceID != "workspace-test" || cfg.CozeLoop.APIToken != "token-test" {
 		t.Fatalf("unexpected CozeLoop credentials config: %+v", cfg.CozeLoop)
 	}
@@ -50,6 +60,7 @@ func TestLoadDefaultsAndOverrides(t *testing.T) {
 }
 
 func TestLoadPromptConfig(t *testing.T) {
+	clearBudgetEnv(t)
 	t.Setenv("APP_DATA_DIR", t.TempDir())
 	t.Setenv("COZELOOP_PROMPT_ENABLED", "true")
 	t.Setenv("AGENT_PROMPT_KEY", "remote-interview")
@@ -71,6 +82,7 @@ func TestLoadPromptConfig(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidAgentDebug(t *testing.T) {
+	clearBudgetEnv(t)
 	t.Setenv("APP_DATA_DIR", t.TempDir())
 	t.Setenv("AGENT_DEBUG", "sometimes")
 
@@ -86,12 +98,18 @@ func TestValidateForChat(t *testing.T) {
 	if err := (Config{OpenAI: OpenAIConfig{APIKey: "key"}}).ValidateForChat(); err == nil {
 		t.Fatal("expected model validation error")
 	}
-	if err := (Config{OpenAI: OpenAIConfig{APIKey: "key", Model: "model"}}).ValidateForChat(); err != nil {
+	if err := (Config{OpenAI: OpenAIConfig{APIKey: "key", Model: "model"}}).ValidateForChat(); err == nil {
+		t.Fatal("expected missing chat budget validation error")
+	}
+	cfg := validBudgetConfig()
+	cfg.APIKey, cfg.Model = "key", "model"
+	if err := (Config{OpenAI: cfg}).ValidateForChat(); err != nil {
 		t.Fatalf("expected valid chat configuration: %v", err)
 	}
 }
 
 func TestLoadCozeLoopDefaults(t *testing.T) {
+	clearBudgetEnv(t)
 	t.Setenv("APP_DATA_DIR", t.TempDir())
 	t.Setenv("COZELOOP_ENABLED", "")
 	t.Setenv("COZELOOP_EVALUATION_ENABLED", "")
@@ -140,6 +158,7 @@ func TestLoadCozeLoopDefaults(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidCozeLoopBoolean(t *testing.T) {
+	clearBudgetEnv(t)
 	t.Setenv("APP_DATA_DIR", t.TempDir())
 	t.Setenv("COZELOOP_ENABLED", "sometimes")
 

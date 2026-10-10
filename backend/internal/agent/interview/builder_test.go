@@ -21,14 +21,14 @@ import (
 )
 
 func TestNewBuilderRequiresModel(t *testing.T) {
-	builder, err := NewBuilder(nil)
+	builder, err := NewBuilder(nil, testBudgetGuard(t))
 	if err == nil {
 		t.Fatalf("expected validation error, got builder=%v", builder)
 	}
 }
 
 func TestNewBuilderWithPromptProviderRequiresProvider(t *testing.T) {
-	_, err := NewBuilderWithPromptProvider(&scriptedToolCallingModel{}, nil)
+	_, err := NewBuilderWithPromptProvider(&scriptedToolCallingModel{}, nil, testBudgetGuard(t))
 	if err == nil || !strings.Contains(err.Error(), "prompt provider is required") {
 		t.Fatalf("NewBuilderWithPromptProvider() error = %v, want provider validation error", err)
 	}
@@ -51,7 +51,7 @@ func TestBuilderUsesInjectedPromptProvider(t *testing.T) {
 			},
 		}, nil
 	})
-	builder, err := NewBuilderWithPromptProvider(chatModel, provider)
+	builder, err := NewBuilderWithPromptProvider(chatModel, provider, testBudgetGuard(t))
 	if err != nil {
 		t.Fatalf("NewBuilderWithPromptProvider() error = %v", err)
 	}
@@ -89,7 +89,7 @@ func TestBuilderPassesPromptVariablesAndMetadata(t *testing.T) {
 			},
 		}, nil
 	})
-	builder, err := NewBuilderWithPromptProvider(chatModel, provider)
+	builder, err := NewBuilderWithPromptProvider(chatModel, provider, testBudgetGuard(t))
 	if err != nil {
 		t.Fatalf("NewBuilderWithPromptProvider() error = %v", err)
 	}
@@ -130,7 +130,7 @@ func TestBuilderBindsToolsWithoutReplacingSourceModel(t *testing.T) {
 		ToolCallingChatModel: &scriptedToolCallingModel{},
 		boundModel:           boundModel,
 	}
-	builder, err := NewBuilder(sourceModel, tool)
+	builder, err := NewBuilder(sourceModel, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -281,7 +281,7 @@ func TestRecordToolCallRejectsInvalidOrExhaustedState(t *testing.T) {
 
 func TestBuilderGraphRunsPlainTextToEnd(t *testing.T) {
 	chatModel := &scriptedToolCallingModel{plainTextOnly: true}
-	builder, err := NewBuilder(chatModel)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t))
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -321,7 +321,7 @@ func TestBuilderGraphCallbackUsesConfiguredNodeNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFakeSearchQuestionsTool() error = %v", err)
 	}
-	builder, err := NewBuilder(&scriptedToolCallingModel{}, tool)
+	builder, err := NewBuilder(&scriptedToolCallingModel{}, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -375,7 +375,7 @@ func TestBuilderGraphRunsToolLoopAndHidesIntermediateMessages(t *testing.T) {
 		t.Fatalf("NewFakeSearchQuestionsTool() error = %v", err)
 	}
 	chatModel := &scriptedToolCallingModel{}
-	builder, err := NewBuilder(chatModel, tool)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -427,7 +427,7 @@ func TestBuilderGraphStreamsTextWithoutWaitingForLateToolCall(t *testing.T) {
 		t.Fatalf("NewFakeSearchQuestionsTool() error = %v", err)
 	}
 	chatModel := &scriptedToolCallingModel{contentBeforeToolCall: true}
-	builder, err := NewBuilder(chatModel, tool)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -457,7 +457,7 @@ func TestBuilderGraphSupportsMultipleToolCalls(t *testing.T) {
 		newSearchToolCall("call-1", "Go"),
 		newSearchToolCall("call-2", "Rust"),
 	}}
-	builder, err := NewBuilder(chatModel, tool)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -490,7 +490,7 @@ func TestBuilderGraphReturnsToolExecutionError(t *testing.T) {
 			Arguments: `{"query":"Go"}`,
 		},
 	}}}
-	builder, err := NewBuilder(chatModel, failingTool)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t), failingTool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}
@@ -524,7 +524,7 @@ func TestBuilderGraphRejectsSeventhToolRound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewFakeSearchQuestionsTool() error = %v", err)
 	}
-	builder, err := NewBuilder(&scriptedToolCallingModel{alwaysToolCall: true}, tool)
+	builder, err := NewBuilder(&scriptedToolCallingModel{alwaysToolCall: true}, testBudgetGuard(t), tool)
 	if err != nil {
 		t.Fatalf("NewBuilder() error = %v", err)
 	}

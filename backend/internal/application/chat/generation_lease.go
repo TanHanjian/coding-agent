@@ -57,8 +57,8 @@ func (l *memoryHubLease) Complete(message conversation.Message) {
 		if run == nil || run.owner != l {
 			return
 		}
-		run.content, run.status = message.Content, message.Status
-		l.hub.broadcast(run, GenerationUpdate{Kind: GenerationUpdateTerminal, Status: message.Status})
+		run.content, run.status, run.errorCode = message.Content, message.Status, message.ErrorCode
+		l.hub.broadcast(run, GenerationUpdate{Kind: GenerationUpdateTerminal, Status: message.Status, ErrorCode: message.ErrorCode})
 		for ch := range run.subscribers {
 			close(ch)
 		}

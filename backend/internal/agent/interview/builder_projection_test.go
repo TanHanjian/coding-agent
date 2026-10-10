@@ -24,7 +24,7 @@ func (projectionSink) WriteEvent(context.Context, chat.GenerationEvent) error { 
 
 func TestProjectionSurvivesRealGraphToModel(t *testing.T) {
 	chatModel := &scriptedToolCallingModel{plainTextOnly: true}
-	builder, err := NewBuilder(chatModel)
+	builder, err := NewBuilder(chatModel, testBudgetGuard(t))
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -26,9 +26,15 @@ type Config struct {
 // OpenAIConfig 仅包含进程本地的模型配置。APIKey 必须来自环境变量（直接设置或由
 // 本地 .env 加载），不得来自前端、SQLite、日志或 HTTP 请求。
 type OpenAIConfig struct {
-	APIKey  string
-	BaseURL string
-	Model   string
+	APIKey              string
+	BaseURL             string
+	Model               string
+	ContextWindowTokens int
+	MaxOutputTokens     int
+	SafetyMarginTokens  int
+	OutputLimitMode     string
+	// SafetyMarginConfigured 区分未配置安全余量与显式配置为 0。
+	SafetyMarginConfigured bool
 }
 
 // CozeLoopConfig 包含 CozeLoop 基础 Client 和 Prompt Hub 的进程级配置。
@@ -63,6 +69,10 @@ func Load() (Config, error) {
 	agentDebug, err := envBool("AGENT_DEBUG", false)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse AGENT_DEBUG: %w", err)
+	}
+	openAI, err := loadOpenAIConfig()
+	if err != nil {
+		return Config{}, err
 	}
 	cozeLoopEnabled, err := envBool("COZELOOP_ENABLED", false)
 	if err != nil {
@@ -106,11 +116,7 @@ func Load() (Config, error) {
 		LogLevel:     logLevel,
 		AgentDebug:   agentDebug,
 		DatabasePath: filepath.Join(dataDir, "data", "app.db"),
-		OpenAI: OpenAIConfig{
-			APIKey:  os.Getenv("OPENAI_API_KEY"),
-			BaseURL: os.Getenv("OPENAI_BASE_URL"),
-			Model:   os.Getenv("OPENAI_MODEL"),
-		},
+		OpenAI:       openAI,
 		CozeLoop: CozeLoopConfig{
 			Enabled:                        cozeLoopEnabled,
 			EvaluationEnabled:              cozeLoopEvaluationEnabled,
@@ -202,7 +208,7 @@ func (c Config) ValidateForChat() error {
 	if strings.TrimSpace(c.OpenAI.Model) == "" {
 		return errors.New("OPENAI_MODEL is required when chat is enabled")
 	}
-	return nil
+	return c.OpenAI.ValidateBudget()
 }
 
 func envOr(key, fallback string) string {

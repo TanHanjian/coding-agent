@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	agentcontext "interview-memory-agent/backend/internal/agent/context"
 	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	"interview-memory-agent/backend/internal/eval"
 	agentopenai "interview-memory-agent/backend/internal/infrastructure/agent/openai"
@@ -96,6 +97,18 @@ func main() {
 	if err != nil {
 		fatal(fmt.Errorf("load evaluation config: %w", err))
 	}
+	if err := cfg.ValidateForChat(); err != nil {
+		fatal(fmt.Errorf("candidate model config: %w", err))
+	}
+	budgetGuard, err := agentcontext.NewModelCallGuard(agentcontext.ModelCallConfig{
+		ModelID:             cfg.OpenAI.Model,
+		ContextWindowTokens: cfg.OpenAI.ContextWindowTokens,
+		OutputLimitTokens:   cfg.OpenAI.MaxOutputTokens,
+		SafetyMarginTokens:  cfg.OpenAI.SafetyMarginTokens,
+	}, agentcontext.NewRequestTokenEstimator())
+	if err != nil {
+		fatal(fmt.Errorf("candidate model budget: %w", err))
+	}
 	if strings.TrimSpace(*promptVersion) != "" && strings.TrimSpace(*promptLabel) != "" {
 		fatal(errors.New("--prompt-version and --prompt-label cannot be used together"))
 	}
@@ -167,7 +180,7 @@ func main() {
 		fmt.Fprintln(os.Stderr, "warning: EVAL_JUDGE_API_KEY and EVAL_JUDGE_MODEL are not both configured; results will be unscored")
 	}
 
-	runner := &eval.Runner{Candidate: candidate, Judge: judge, PromptProvider: promptProvider}
+	runner := &eval.Runner{Candidate: candidate, Judge: judge, PromptProvider: promptProvider, BudgetGuard: budgetGuard}
 	runID, err := eval.NewRunID()
 	if err != nil {
 		fatalWithCozeLoop(cozeLoopClient, err)

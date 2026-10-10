@@ -13,28 +13,29 @@ import (
 )
 
 // NewChatModel 根据进程本地 OpenAI 配置创建可复用的 Eino ChatModel。
+// 客户端没有会话状态，可由应用组装根创建后供 AgentBuilder 复用。
 //
-// 此函数由 cmd/server 的应用组装阶段调用一次。它不应由 HTTP Handler、
-// Chat Service 或每次 AgentBuilder.Build 调用；模型客户端没有会话状态，
-// 可以安全复用。
-//
-// 实现步骤：
-//  1. 校验 APIKey 和 Model 均已配置，且不在错误或日志中输出 APIKey。
-//  2. 将 APIKey、Model 和可选 BaseURL 映射到 Eino OpenAI 扩展的配置。
-//  3. 调用扩展包的构造函数，并返回 model.BaseChatModel。
-//  4. 由调用方将返回的模型注入用户实现的 AgentBuilder。
-//
-// 此函数只创建模型客户端，不接入 main。Agent 的提示词、工具、检索和运行策略
-// 仍完全由 AgentBuilder 的实现决定。
+// 提供任何预算字段时必须通过完整预算校验，并将 MaxOutputTokens 映射到
+// OutputLimitMode 指定的唯一输出上限字段。预算完全未配置时保留独立
+// eval/judge 的无 cap 行为；服务器聊天必须先调用 Config.ValidateForChat。
+// 当前装配只支持此配置快照，不支持通过单次调用 option 或 ExtraFields
+// 覆盖模型身份、输出上限或模式；调用方不得使用这些 override 绕过预算。
 func NewChatModel(ctx context.Context, cfg config.OpenAIConfig) (model.ToolCallingChatModel, error) {
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
-	chatModel, err := einoopenai.NewChatModel(ctx, &einoopenai.ChatModelConfig{
+	clientConfig := &einoopenai.ChatModelConfig{
 		APIKey:  cfg.APIKey,
 		BaseURL: cfg.BaseURL,
 		Model:   cfg.Model,
-	})
+	}
+	switch cfg.OutputLimitMode {
+	case "max_tokens":
+		clientConfig.MaxTokens = &cfg.MaxOutputTokens
+	case "max_completion_tokens":
+		clientConfig.MaxCompletionTokens = &cfg.MaxOutputTokens
+	}
+	chatModel, err := einoopenai.NewChatModel(ctx, clientConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -49,6 +50,9 @@ func ValidateConfig(cfg config.OpenAIConfig) error {
 	}
 	if strings.TrimSpace(cfg.Model) == "" {
 		return errors.New("OPENAI_MODEL is required when chat is enabled")
+	}
+	if cfg.HasBudget() {
+		return cfg.ValidateBudget()
 	}
 	return nil
 }

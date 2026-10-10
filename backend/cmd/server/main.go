@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -115,17 +116,20 @@ func main() {
 			"legacy_only_messages", recoveryResult.LegacyOnlyMessages)
 	}
 
-	chatService, err := chat.NewRunService(chat.RunDependencies{
-		Executor:    chatExecutor,
-		Registry:    chat.NewMemoryGenerationRegistry(),
-		Hub:         chat.NewMemoryGenerationHub(),
-		RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
-		Store:       agentRunStore,
-	})
-	if err != nil {
-		slog.Error("configure chat service", "error", err)
-		closeCozeLoop(cozeLoopClient)
-		os.Exit(1)
+	var chatService *chat.RunService
+	if chatExecutor != nil {
+		chatService, err = chat.NewRunService(chat.RunDependencies{
+			Executor:    chatExecutor,
+			Registry:    chat.NewMemoryGenerationRegistry(),
+			Hub:         chat.NewMemoryGenerationHub(),
+			RunContexts: chat.NewDetachedRunContextFactory(context.Background(), 2*time.Minute),
+			Store:       agentRunStore,
+		})
+		if err != nil {
+			slog.Error("configure chat service", "error", err)
+			closeCozeLoop(cozeLoopClient)
+			os.Exit(1)
+		}
 	}
 	router := chi.NewRouter()
 	router.Get("/healthz", healthHandler(db).ServeHTTP)
@@ -135,7 +139,9 @@ func main() {
 		httpanswer.RegisterRoutes(r, answerService)
 		httpreview.RegisterRoutes(r, reviewService)
 		httpconversation.RegisterRoutes(r, conversationService)
-		httpchat.RegisterRoutes(r, chatService)
+		if chatService != nil {
+			httpchat.RegisterRoutes(r, chatService)
+		}
 	})
 	handler := httpx.WithRequestID(httpx.Recover(requestLogger(router)))
 	server := &http.Server{Addr: cfg.Addr, Handler: handler, ReadHeaderTimeout: 5 * time.Second}
@@ -158,8 +164,26 @@ func closeCozeLoop(client *cozeloopinfra.Client) {
 // newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
 // 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
 func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, projectionReader conversation.ProjectionReader, entryTree conversation.EntryTree, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
+	if strings.TrimSpace(cfg.OpenAI.Model) == "" {
+		return nil, nil
+	}
 	if err := cfg.ValidateForChat(); err != nil {
 		return nil, fmt.Errorf("validate chat configuration: %w", err)
+	}
+	callConfig := agentcontext.ModelCallConfig{
+		ModelID:             cfg.OpenAI.Model,
+		ContextWindowTokens: cfg.OpenAI.ContextWindowTokens,
+		OutputLimitTokens:   cfg.OpenAI.MaxOutputTokens,
+		SafetyMarginTokens:  cfg.OpenAI.SafetyMarginTokens,
+	}
+	tokenEstimator := agentcontext.NewRequestTokenEstimator()
+	guard, err := agentcontext.NewModelCallGuard(callConfig, tokenEstimator)
+	if err != nil {
+		return nil, fmt.Errorf("configure model call budget: %w", err)
+	}
+	budgetPolicy, err := newPreparationBudgetPolicy(callConfig)
+	if err != nil {
+		return nil, fmt.Errorf("configure context preparation budget: %w", err)
 	}
 	if projectionReader == nil {
 		return nil, fmt.Errorf("configure chat context: projection reader is required")
@@ -179,27 +203,14 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 	if len(promptProviders) > 0 && promptProviders[0] != nil {
 		promptProvider = promptProviders[0]
 	}
-	runtimeBuilder, err := interview.NewBuilderWithPromptProvider(chatModel, promptProvider, tools...)
+	runtimeBuilder, err := interview.NewBuilderWithPromptProvider(chatModel, promptProvider, guard, tools...)
 	if err != nil {
 		return nil, fmt.Errorf("create interview runtime builder: %w", err)
 	}
 
-	// Phase 4: 创建 Context Compaction 组件
-	// 1. 预算策略：配置模型窗口大小
-	modelWindows := map[string]int{
-		cfg.OpenAI.Model: 128000, // 默认值，实际应从模型配置读取
-		"default":        128000,
-	}
-	budgetConfig := agentcontext.DefaultBudgetConfig()
-	budgetPolicy := agentcontext.NewEnforcedBudgetPolicy(budgetConfig, modelWindows)
-
-	// 2. Token 估算器：字符/token 比例 4.0
-	tokenEstimator := agentcontext.NewCharBasedTokenEstimator(4.0)
-
-	// 3. 边界选择器
 	boundarySelector := agentcontext.NewDefaultBoundarySelector(tokenEstimator)
 
-	// 4. 摘要生成器：包装 ChatModel 为函数式接口
+	// The summary guard checks the completed prompt without chat tool schemas.
 	modelInvoker := func(ctx context.Context, messages []*einoschema.Message) (*einoschema.Message, error) {
 		resp, err := chatModel.Generate(ctx, messages)
 		if err != nil {
@@ -207,7 +218,7 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 		}
 		return resp, nil
 	}
-	contextSummarizer := agentcontext.NewEinoContextSummarizer(modelInvoker)
+	contextSummarizer := agentcontext.NewEinoContextSummarizer(agentcontext.GuardedModelInvoker(guard, modelInvoker))
 
 	// 5. 摘要协调器
 	summaryCoordinator := agentcontext.NewDefaultSummaryCoordinator(contextSummarizer, tokenEstimator)
@@ -232,6 +243,28 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 		return nil, fmt.Errorf("create chat executor: %w", err)
 	}
 	return chatExecutor, nil
+}
+
+func newPreparationBudgetPolicy(config agentcontext.ModelCallConfig) (agentcontext.BudgetPolicy, error) {
+	sections, err := agentcontext.PreparationBudget(config)
+	if err != nil {
+		return nil, err
+	}
+	plan := agentcontext.BudgetPlan{
+		ContextWindowTokens:     sections.ContextWindowTokens,
+		InstructionTokens:       sections.InstructionTokens,
+		SummaryTokens:           sections.SummaryTokens,
+		HistoryTokens:           sections.HistoryTokens,
+		InterviewMaterialTokens: sections.InterviewMaterialTokens,
+		ToolResultTokens:        sections.ToolResultTokens,
+		OutputReservedTokens:    sections.OutputReservedTokens,
+	}
+	return agentcontext.BudgetPolicyFunc(func(ctx context.Context, _ chat.ContextInput) (agentcontext.BudgetPlan, error) {
+		if err := ctx.Err(); err != nil {
+			return agentcontext.BudgetPlan{}, err
+		}
+		return plan, nil
+	}), nil
 }
 
 func configurePromptProvider(client *cozeloopinfra.Client, cfg config.CozeLoopConfig) (agentprompt.Provider, error) {

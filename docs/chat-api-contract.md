@@ -26,7 +26,7 @@
 | `GET` | `/api/v1/conversations/{conversationId}/messages` | 按 `sequence ASC` 读取已持久化的可见 Message。 |
 | `GET` | `/api/v1/messages/{messageId}` | 读取单条 Message 及其状态。 |
 
-`GET .../messages` 的领域 DTO 由前端映射为 AI SDK `UIMessage`。首版只映射 `user`、`assistant` 与单个 text part；将来引入引用和 Tool UI 时才扩展为多 part。
+`GET .../messages` 的领域 DTO 由前端映射为 AI SDK `UIMessage`。历史正文映射为 text part；`status` 和 `errorCode` 保留在 UIMessage metadata 中，用于独立的失败提示。错误提示不拼接进 assistant 正文，历史 `errorMessage` 不直接展示，前端按稳定 code 映射固定安全文案。
 
 ## 3. 发起聊天
 
@@ -139,7 +139,21 @@ X-Assistant-Message-ID: m_02...
 | `generation_not_active` | `409` | 刷新该 Message；不显示为系统故障。 |
 | `model_unavailable` | `503` | 保留用户输入，提供重试。 |
 | `stream_failed` | 流内 error part | 保留助手已输出文本，显示失败状态。 |
+| `context_budget_exceeded` | 持久化 Message 错误码；流内标准 error part | 保留已输出文本，提示上下文超出容量，缩小请求范围或使用容量更大的模型。 |
+| `context_counting_failed` | 持久化 Message 错误码；流内标准 error part | 保留已输出文本，提示无法安全计数，检查模型和输入配置。 |
 | `generation_interrupted` | 持久化 Message 错误码（历史读取成功仍为 `200`） | 显示最后文本和服务中断提示，允许以新幂等键重新提问。 |
+
+预算与计数失败复用 Run 的 `FinishAssistant` 终态事务：取消优先，其次为文本 flush/Recorder 持久化失败，然后按 `errors.Is` 识别预算与计数失败。失败不会提交缓存的 FinalMessage，已成功持久化的可见正文保留；终态事务失败时不广播终态。
+
+应用层 `GenerationSnapshot.ErrorCode` 与终态 `GenerationUpdate.ErrorCode` 传递同一稳定码，活跃订阅和终态重新订阅均按该码映射。HTTP 不输出原始 provider 错误或数据库 `errorMessage`，SSE 仍为 AI SDK 标准 `{"type":"error","errorText":"固定安全文案"}`，随后 `[DONE]`，不添加自定义 error 字段或把错误当作文本 delta。
+
+| code | SSE 与刷新历史的固定文案 |
+| --- | --- |
+| `context_budget_exceeded` | 本次请求的上下文超过模型容量，生成已停止。请缩小请求范围，或使用上下文容量更大的模型。 |
+| `context_counting_failed` | 本次请求的上下文无法安全计数，生成已停止。请检查模型和输入配置。 |
+| 其他或空 code | 生成失败，请重新生成 |
+
+普通失败的数据库 code/text 保持现有存储行为；上述通用文案仅用于安全的用户展示。实时沿用 `useChat` 错误 banner，刷新后每条失败助手消息在正文之外显示提示。
 
 前端根据持久化 Message 状态渲染：`streaming` 显示停止按钮；`cancelled` 显示“已停止生成”；`failed` 显示可重试错误；`completed` 为普通回答。取消控制器、ReadableStream 和 `ActiveGenerationRegistry` 都是运行时资源，不进入 Redux 或 SQLite。
 

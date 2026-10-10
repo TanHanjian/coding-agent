@@ -7,6 +7,7 @@ import (
 
 	"github.com/cloudwego/eino/components/model"
 	"github.com/cloudwego/eino/schema"
+	agentcontext "interview-memory-agent/backend/internal/agent/context"
 )
 
 type plainCandidate struct{}
@@ -26,7 +27,11 @@ func (plainCandidate) WithTools([]*schema.ToolInfo) (model.ToolCallingChatModel,
 }
 
 func TestRunnerExecutesProductionBuilderWithoutStorage(t *testing.T) {
-	runner := &Runner{Candidate: plainCandidate{}}
+	guard, err := agentcontext.NewModelCallGuard(agentcontext.ModelCallConfig{ModelID: "test-candidate", ContextWindowTokens: 100000, OutputLimitTokens: 1000, SafetyMarginTokens: 0}, agentcontext.NewRequestTokenEstimator())
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := &Runner{Candidate: plainCandidate{}, BudgetGuard: guard}
 	caseData := EvalCase{ID: "runner", Version: DatasetVersion, Input: EvalInput{Query: "说明算法题步骤"}, ToolExpectations: ToolExpectations{Forbidden: []string{"search_question_memory", "get_question_context"}}, AnswerExpectations: AnswerExpectations{MustContain: []string{"澄清题意"}}}
 	result := runner.RunCaseWithMetadata(context.Background(), caseData, 5*time.Second, RunMetadata{
 		RunID:       "run-123",

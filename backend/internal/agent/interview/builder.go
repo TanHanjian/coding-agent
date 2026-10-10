@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 
+	agentcontext "interview-memory-agent/backend/internal/agent/context"
 	"interview-memory-agent/backend/internal/agent/eino"
 	agentprompt "interview-memory-agent/backend/internal/agent/prompt"
 	chat "interview-memory-agent/backend/internal/application/chat"
@@ -36,6 +37,7 @@ type Builder struct {
 	chatModel      model.ToolCallingChatModel
 	tools          []tool.BaseTool
 	promptProvider agentprompt.Provider
+	budgetGuard    *agentcontext.ModelCallGuard
 }
 
 // GraphInput 是 Graph 的请求输入。它与 Chat RuntimeInput 使用同一类型，
@@ -47,6 +49,7 @@ type GraphInput = chat.RuntimeInput
 type agentState struct {
 	Messages         []*schema.Message
 	ToolRounds       int
+	ModelCalls       int
 	Recorder         chat.RunRecorder
 	LastCallEntryID  conversation.EntryID
 	PendingToolCalls map[string]string // callID -> toolName
@@ -355,26 +358,34 @@ func bindTools(
 	ctx context.Context,
 	chatModel model.ToolCallingChatModel,
 	tools []tool.BaseTool,
-) (model.ToolCallingChatModel, error) {
+) (model.ToolCallingChatModel, []*schema.ToolInfo, []tool.BaseTool, error) {
 	if len(tools) == 0 {
-		return chatModel, nil
+		return chatModel, nil, nil, nil
 	}
-
-	toolInfos := make([]*schema.ToolInfo, 0, len(tools))
-
+	infos := make([]*schema.ToolInfo, 0, len(tools))
 	for _, currentTool := range tools {
+		if currentTool == nil {
+			return nil, nil, nil, fmt.Errorf("%w: tool is nil", chat.ErrContextCountingFailed)
+		}
 		info, err := currentTool.Info(ctx)
 		if err != nil {
-			return nil, err
+			return nil, nil, nil, fmt.Errorf("%w: tool definition unavailable", chat.ErrContextCountingFailed)
 		}
-		toolInfos = append(toolInfos, info)
+		infos = append(infos, info)
 	}
-
-	boundModel, err := chatModel.WithTools(toolInfos)
+	frozen, err := agentcontext.SnapshotToolInfos(infos)
 	if err != nil {
-		return nil, err
+		return nil, nil, nil, fmt.Errorf("%w: invalid tool schema", chat.ErrContextCountingFailed)
 	}
-	return boundModel, nil
+	boundModel, err := chatModel.WithTools(frozen)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("%w: tool binding failed", chat.ErrContextCountingFailed)
+	}
+	frozenTools, err := freezeTools(tools, frozen)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return boundModel, frozen, frozenTools, nil
 }
 
 func newPromptTemplateNode(templates []schema.MessagesTemplate) (*einoprompt.DefaultChatTemplate, error) {
@@ -392,8 +403,8 @@ func newPromptTemplateNode(templates []schema.MessagesTemplate) (*einoprompt.Def
 // NewBuilder 创建 RuntimeBuilder。传入 ToolCallingChatModel 而非 BaseChatModel，
 // 使后续实现能安全地绑定工具，而不用在运行时做类型断言。tools	 是允许 Agent
 // 调用的完整工具集合；首版可不传入工具。默认使用内置 LocalPromptProvider。
-func NewBuilder(chatModel model.ToolCallingChatModel, tools ...tool.BaseTool) (*Builder, error) {
-	return NewBuilderWithPromptProvider(chatModel, agentprompt.NewLocalPromptProvider(), tools...)
+func NewBuilder(chatModel model.ToolCallingChatModel, guard *agentcontext.ModelCallGuard, tools ...tool.BaseTool) (*Builder, error) {
+	return NewBuilderWithPromptProvider(chatModel, agentprompt.NewLocalPromptProvider(), guard, tools...)
 }
 
 // NewBuilderWithPromptProvider creates a Builder with an explicit prompt
@@ -401,6 +412,7 @@ func NewBuilder(chatModel model.ToolCallingChatModel, tools ...tool.BaseTool) (*
 func NewBuilderWithPromptProvider(
 	chatModel model.ToolCallingChatModel,
 	promptProvider agentprompt.Provider,
+	guard *agentcontext.ModelCallGuard,
 	tools ...tool.BaseTool,
 ) (*Builder, error) {
 	if chatModel == nil {
@@ -409,7 +421,11 @@ func NewBuilderWithPromptProvider(
 	if promptProvider == nil {
 		return nil, errors.New("interview agent builder: prompt provider is required")
 	}
+	if guard == nil {
+		return nil, errors.New("interview agent builder: model budget guard is required")
+	}
 	return &Builder{
+		budgetGuard:    guard,
 		chatModel:      chatModel,
 		tools:          append([]tool.BaseTool(nil), tools...),
 		promptProvider: promptProvider,
@@ -454,7 +470,7 @@ func (b *Builder) buildGraph(ctx context.Context, input chat.BuildInput) (compos
 		}),
 	)
 
-	chatModel, err := bindTools(ctx, b.chatModel, b.tools)
+	chatModel, toolInfos, frozenTools, err := bindTools(ctx, b.chatModel, b.tools)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +491,7 @@ func (b *Builder) buildGraph(ctx context.Context, input chat.BuildInput) (compos
 	); err != nil {
 		return nil, err
 	}
-	toolNode, err := newToolsNode(ctx, b.tools)
+	toolNode, err := newToolsNode(ctx, frozenTools)
 	if err != nil {
 		return nil, err
 	}
@@ -492,7 +508,17 @@ func (b *Builder) buildGraph(ctx context.Context, input chat.BuildInput) (compos
 		"chat_model",
 		chatModel,
 		compose.WithNodeName("chat_model"),
-		compose.WithStatePreHandler(modelStateInput),
+		compose.WithStatePreHandler(func(ctx context.Context, messages []*schema.Message, state *agentState) ([]*schema.Message, error) {
+			input, err := modelStateInput(ctx, messages, state)
+			if err != nil {
+				return nil, err
+			}
+			state.ModelCalls++
+			if err := b.budgetGuard.Check(ctx, "chat", state.ModelCalls, input, toolInfos); err != nil {
+				return nil, err
+			}
+			return input, nil
+		}),
 	); err != nil {
 		return nil, err
 	}

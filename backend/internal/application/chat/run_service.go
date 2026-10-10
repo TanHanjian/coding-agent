@@ -123,6 +123,12 @@ func (s *RunService) execute(ctx context.Context, cancel context.CancelFunc, req
 	case flushErr != nil || recordErr != nil:
 		status = conversation.MessageStatusFailed
 		code, text = runFailure("message_persist_failed")
+	case errors.Is(err, ErrContextBudgetExceeded):
+		status = conversation.MessageStatusFailed
+		code, text = runFailure(ContextBudgetExceededCode)
+	case errors.Is(err, ErrContextCountingFailed):
+		status = conversation.MessageStatusFailed
+		code, text = runFailure(ContextCountingFailedCode)
 	case err != nil || ctx.Err() != nil:
 		status = conversation.MessageStatusFailed
 		code, text = runFailure("model_failed")
@@ -143,6 +149,8 @@ func (s *RunService) execute(ctx context.Context, cancel context.CancelFunc, req
 
 func runFailure(code string) (string, string) {
 	switch code {
+	case ContextBudgetExceededCode, ContextCountingFailedCode:
+		return code, SafeGenerationErrorText(code)
 	case "generation_start_failed":
 		return code, "Generation could not start."
 	case "message_persist_failed":
@@ -172,7 +180,7 @@ func (s *RunService) Subscribe(ctx context.Context, id string) (GenerationSubscr
 			return GenerationSubscription{}, ErrRunUnavailable
 		}
 	}
-	return GenerationSubscription{Snapshot: GenerationSnapshot{AssistantMessageID: message.ID, Content: message.Content, Status: message.Status}, close: func() {}}, nil
+	return GenerationSubscription{Snapshot: GenerationSnapshot{AssistantMessageID: message.ID, Content: message.Content, Status: message.Status, ErrorCode: message.ErrorCode}, close: func() {}}, nil
 }
 
 func (s *RunService) Cancel(ctx context.Context, id string) (conversation.Message, error) {

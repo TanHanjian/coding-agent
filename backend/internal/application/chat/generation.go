@@ -19,6 +19,7 @@ type memoryGeneration struct {
 	owner          *memoryHubLease
 	content        string
 	status         conversation.MessageStatus
+	errorCode      string
 	eventSummaries []GenerationEvent
 	subscribers    map[chan GenerationUpdate]struct{}
 }
@@ -80,7 +81,8 @@ func (h *MemoryGenerationHub) Complete(message conversation.Message) {
 	}
 	run.content = message.Content
 	run.status = message.Status
-	h.broadcast(run, GenerationUpdate{Kind: GenerationUpdateTerminal, Status: message.Status})
+	run.errorCode = message.ErrorCode
+	h.broadcast(run, GenerationUpdate{Kind: GenerationUpdateTerminal, Status: message.Status, ErrorCode: message.ErrorCode})
 	for subscriber := range run.subscribers {
 		close(subscriber)
 	}
@@ -97,7 +99,7 @@ func (h *MemoryGenerationHub) Subscribe(assistantMessageID string) (GenerationSu
 		return GenerationSubscription{}, false
 	}
 	run.subscribers[ch] = struct{}{}
-	snapshot := GenerationSnapshot{AssistantMessageID: assistantMessageID, Content: run.content, Status: run.status, EventSummaries: append([]GenerationEvent(nil), run.eventSummaries...)}
+	snapshot := GenerationSnapshot{AssistantMessageID: assistantMessageID, Content: run.content, Status: run.status, ErrorCode: run.errorCode, EventSummaries: append([]GenerationEvent(nil), run.eventSummaries...)}
 	h.mu.Unlock()
 	return GenerationSubscription{Snapshot: snapshot, Updates: ch, close: func() {
 		once.Do(func() {
@@ -127,14 +129,16 @@ type GenerationSnapshot struct {
 	AssistantMessageID string
 	Content            string
 	Status             conversation.MessageStatus
+	ErrorCode          string
 	EventSummaries     []GenerationEvent
 }
 
 type GenerationUpdate struct {
-	Kind   GenerationUpdateKind
-	Text   string
-	Status conversation.MessageStatus
-	Event  GenerationEvent
+	Kind      GenerationUpdateKind
+	Text      string
+	Status    conversation.MessageStatus
+	ErrorCode string
+	Event     GenerationEvent
 }
 
 type GenerationUpdateKind string
