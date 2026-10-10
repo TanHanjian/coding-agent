@@ -11,27 +11,27 @@ import (
 func pathValidationFixtures(t *testing.T) (user, plain, calls, first, second conversation.ConversationEntry) {
 	t.Helper()
 	setupTestPolicies(t)
-	user = conversation.ConversationEntry{ID: "user", Message: conversation.EntryMessage{Role: conversation.EntryRoleUser}}
-	plain = conversation.ConversationEntry{ID: "plain", Message: conversation.EntryMessage{
+	user = conversation.ConversationEntry{ID: "user", Message: &conversation.EntryMessage{Role: conversation.EntryRoleUser}}
+	plain = conversation.ConversationEntry{ID: "plain", Message: &conversation.EntryMessage{
 		Role: conversation.EntryRoleAssistant, StopReason: conversation.EntryStopNormal,
 		Content: []conversation.EntryPart{{Type: conversation.EntryPartText, Text: stringPtr("done")}},
 	}}
 	c1 := mustProjectCall(t, "search", "v1", "call-1", `{"q":"one"}`)
 	c2 := mustProjectCall(t, "calc", "v1", "call-2", `{"expr":"1+1"}`)
-	calls = conversation.ConversationEntry{ID: "calls", Message: conversation.EntryMessage{
+	calls = conversation.ConversationEntry{ID: "calls", Message: &conversation.EntryMessage{
 		Role: conversation.EntryRoleAssistant, StopReason: conversation.EntryStopTools,
 		Content: []conversation.EntryPart{
 			{Type: conversation.EntryPartToolCall, ToolCall: &c1},
 			{Type: conversation.EntryPartToolCall, ToolCall: &c2},
 		},
 	}}
-	first = conversation.ConversationEntry{ID: "first", Message: conversation.EntryMessage{
+	first = conversation.ConversationEntry{ID: "first", Message: &conversation.EntryMessage{
 		Role: conversation.EntryRoleToolResult, ToolResult: &conversation.EntryToolResult{
 			CallEntryID: calls.ID, CallID: c1.ID(), ToolName: c1.Name(),
 			Result: mustProjectResult(t, "search", "v1", `{"count":1}`),
 		},
 	}}
-	second = conversation.ConversationEntry{ID: "second", Message: conversation.EntryMessage{
+	second = conversation.ConversationEntry{ID: "second", Message: &conversation.EntryMessage{
 		Role: conversation.EntryRoleToolResult, ToolResult: &conversation.EntryToolResult{
 			CallEntryID: calls.ID, CallID: c2.ID(), ToolName: c2.Name(),
 			Result: mustProjectResult(t, "calc", "v1", `{"val":"2"}`),
@@ -64,7 +64,7 @@ func TestPathValidationRejectsCorruptHistory(t *testing.T) {
 	cases := map[string][]conversation.ConversationEntry{
 		"assistant root":                 {plain},
 		"tool root":                      {r1},
-		"unknown role":                   {u, {Message: conversation.EntryMessage{Role: "unknown"}}},
+		"unknown role":                   {u, {Message: &conversation.EntryMessage{Role: "unknown"}}},
 		"orphan after user":              {u, r1},
 		"orphan after plain assistant":   {u, plain, r1},
 		"swapped results":                {u, calls, r2, r1},
@@ -94,7 +94,7 @@ func TestPathValidationRejectsCorruptHistory(t *testing.T) {
 				if conversation.IsClosedBranchPoint(full) {
 					t.Errorf("IsClosedBranchPoint accepted corrupt history (suffix length %d)", len(suffix))
 				}
-				if err := conversation.ValidateToolContinuation(full, plain.Message); !errors.Is(err, conversation.ErrEntryCorrupt) {
+				if err := conversation.ValidateToolContinuation(full, *plain.Message); !errors.Is(err, conversation.ErrEntryCorrupt) {
 					t.Errorf("ValidateToolContinuation (suffix length %d): want ErrEntryCorrupt, got %v", len(suffix), err)
 				}
 			}
@@ -104,7 +104,7 @@ func TestPathValidationRejectsCorruptHistory(t *testing.T) {
 
 func TestPathValidationPendingAndMinimalFixtures(t *testing.T) {
 	u, plain, calls, r1, r2 := pathValidationFixtures(t)
-	minimalAssistant := conversation.ConversationEntry{ID: "minimal", Message: conversation.EntryMessage{Role: conversation.EntryRoleAssistant}}
+	minimalAssistant := conversation.ConversationEntry{ID: "minimal", Message: &conversation.EntryMessage{Role: conversation.EntryRoleAssistant}}
 	cases := []struct {
 		name   string
 		path   []conversation.ConversationEntry
@@ -129,10 +129,10 @@ func TestPathValidationPendingAndMinimalFixtures(t *testing.T) {
 			}
 		})
 	}
-	if err := conversation.ValidateToolContinuation([]conversation.ConversationEntry{u, calls}, r1.Message); err != nil {
+	if err := conversation.ValidateToolContinuation([]conversation.ConversationEntry{u, calls}, *r1.Message); err != nil {
 		t.Fatalf("first pending result rejected: %v", err)
 	}
-	if err := conversation.ValidateToolContinuation([]conversation.ConversationEntry{u, calls, r1}, r2.Message); err != nil {
+	if err := conversation.ValidateToolContinuation([]conversation.ConversationEntry{u, calls, r1}, *r2.Message); err != nil {
 		t.Fatalf("second pending result rejected: %v", err)
 	}
 
@@ -145,7 +145,7 @@ func TestPathValidationPendingAndMinimalFixtures(t *testing.T) {
 	freshResult.Message.ToolResult.CallEntryID = freshAssistant.ID
 	freshResult.Message.ToolResult.CallID = freshCall.ID()
 	completed := []conversation.ConversationEntry{u, calls, r1, r2, plain, u}
-	if err := conversation.ValidateToolContinuation(completed, freshAssistant.Message); err != nil {
+	if err := conversation.ValidateToolContinuation(completed, *freshAssistant.Message); err != nil {
 		t.Fatalf("fresh call rejected: %v", err)
 	}
 	pending := append(completed, freshAssistant)
@@ -155,7 +155,7 @@ func TestPathValidationPendingAndMinimalFixtures(t *testing.T) {
 	if conversation.IsClosedBranchPoint(pending) {
 		t.Fatal("second pending group considered closed")
 	}
-	if err := conversation.ValidateToolContinuation(pending, freshResult.Message); err != nil {
+	if err := conversation.ValidateToolContinuation(pending, *freshResult.Message); err != nil {
 		t.Fatalf("second group's result rejected: %v", err)
 	}
 	closed := append(pending, freshResult)
@@ -174,7 +174,7 @@ func TestPathValidationCallIDsArePathScoped(t *testing.T) {
 	for _, id := range []conversation.EntryID{"sibling-left", "sibling-right"} {
 		sibling := calls.Clone()
 		sibling.ID = id
-		if err := conversation.ValidateToolContinuation(parent, sibling.Message); err != nil {
+		if err := conversation.ValidateToolContinuation(parent, *sibling.Message); err != nil {
 			t.Fatalf("sibling continuation rejected: %v", err)
 		}
 		path := append(append([]conversation.ConversationEntry(nil), parent...), sibling)
@@ -183,7 +183,7 @@ func TestPathValidationCallIDsArePathScoped(t *testing.T) {
 		}
 	}
 	completed := []conversation.ConversationEntry{u, calls, r1, r2}
-	if err := conversation.ValidateToolContinuation(completed, calls.Message); !errors.Is(err, domainerr.ErrConflict) {
+	if err := conversation.ValidateToolContinuation(completed, *calls.Message); !errors.Is(err, domainerr.ErrConflict) {
 		t.Fatalf("reused path ID: want ErrConflict, got %v", err)
 	}
 	wrongOwner := r1.Clone()
@@ -191,12 +191,12 @@ func TestPathValidationCallIDsArePathScoped(t *testing.T) {
 	wrongName := r1.Clone()
 	wrongName.Message.ToolResult.ToolName = "calc"
 	wrongName.Message.ToolResult.Result = r2.Message.ToolResult.Result.Clone()
-	for _, next := range []conversation.EntryMessage{plain.Message, r2.Message, wrongOwner.Message, wrongName.Message} {
+	for _, next := range []conversation.EntryMessage{*plain.Message, *r2.Message, *wrongOwner.Message, *wrongName.Message} {
 		if err := conversation.ValidateToolContinuation([]conversation.ConversationEntry{u, calls}, next); !errors.Is(err, domainerr.ErrConflict) {
 			t.Fatalf("invalid pending continuation: want ErrConflict, got %v", err)
 		}
 	}
-	if err := conversation.ValidateToolContinuation(completed, r2.Message); !errors.Is(err, domainerr.ErrConflict) {
+	if err := conversation.ValidateToolContinuation(completed, *r2.Message); !errors.Is(err, domainerr.ErrConflict) {
 		t.Fatalf("extra continuation: want ErrConflict, got %v", err)
 	}
 }

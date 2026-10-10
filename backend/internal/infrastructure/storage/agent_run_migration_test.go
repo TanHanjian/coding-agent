@@ -286,8 +286,8 @@ func TestMigrateFromVersionEightWithLegacyMessages(t *testing.T) {
 	if err := db.QueryRow(`SELECT COUNT(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatal(err)
 	}
-	if migrationCount != 9 {
-		t.Fatalf("expected 9 recorded migrations, got %d", migrationCount)
+	if migrationCount != 10 {
+		t.Fatalf("expected 10 recorded migrations, got %d", migrationCount)
 	}
 }
 

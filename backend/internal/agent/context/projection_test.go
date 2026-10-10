@@ -20,7 +20,7 @@ func projectionFixture(t *testing.T) conversation.ProjectionSnapshot {
 		}
 	}
 	text := "question"
-	entries := []conversation.ConversationEntry{{Message: conversation.EntryMessage{Role: conversation.EntryRoleUser, Content: []conversation.EntryPart{{Type: conversation.EntryPartText, Text: &text}}}}}
+	entries := []conversation.ConversationEntry{{Message: &conversation.EntryMessage{Role: conversation.EntryRoleUser, Content: []conversation.EntryPart{{Type: conversation.EntryPartText, Text: &text}}}}}
 	assistant := conversation.EntryMessage{Role: conversation.EntryRoleAssistant, StopReason: conversation.EntryStopTools, Content: []conversation.EntryPart{{Type: conversation.EntryPartText, Text: &text}}}
 	for _, id := range []string{"c1", "c2"} {
 		call, err := conversation.ProjectSafeToolCall(policy, id, json.RawMessage(`{"query":"safe","token":"must-not-appear"}`))
@@ -29,13 +29,13 @@ func projectionFixture(t *testing.T) conversation.ProjectionSnapshot {
 		}
 		assistant.Content = append(assistant.Content, conversation.EntryPart{Type: conversation.EntryPartToolCall, ToolCall: &call})
 	}
-	entries = append(entries, conversation.ConversationEntry{Message: assistant})
+	entries = append(entries, conversation.ConversationEntry{Message: &assistant})
 	result, err := conversation.ProjectSafeToolResult(policy, json.RawMessage(`{"answer":"safe result","token":"must-not-appear"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, id := range []string{"c1", "c2"} {
-		entries = append(entries, conversation.ConversationEntry{Message: conversation.EntryMessage{Role: conversation.EntryRoleToolResult, ToolResult: &conversation.EntryToolResult{CallEntryID: "e_1", CallID: id, ToolName: policy.ToolName, IsError: id == "c2", Result: result}}})
+		entries = append(entries, conversation.ConversationEntry{Message: &conversation.EntryMessage{Role: conversation.EntryRoleToolResult, ToolResult: &conversation.EntryToolResult{CallEntryID: "e_1", CallID: id, ToolName: policy.ToolName, IsError: id == "c2", Result: result}}})
 	}
 	for i := range entries {
 		entries[i].ID, entries[i].ConversationID, entries[i].Kind, entries[i].PayloadVersion, entries[i].Depth = conversation.EntryID(fmt.Sprintf("e_%d", i)), "conv", conversation.EntryKindMessage, conversation.EntryPayloadV1, int64(i)

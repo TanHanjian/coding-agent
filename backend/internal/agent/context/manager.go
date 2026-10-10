@@ -142,9 +142,13 @@ func (m *Manager) prepareWithPolicies(ctx context.Context, input chat.ContextInp
 		return chat.PreparedContext{}, fmt.Errorf("select context history: %w", err)
 	}
 
+	// 转换 Omitted 为 ConversationEntry 数组（占位实现）
+	// TODO: 需要完整的 Message -> ConversationEntry 转换逻辑
+	historyEntries := make([]conversation.ConversationEntry, 0)
+
 	summary, err := m.summaryCoordinator.Prepare(ctx, SummaryInput{
 		ConversationID: input.Conversation.ID,
-		OmittedHistory: selection.Omitted,
+		OmittedHistory: historyEntries,
 		BudgetTokens:   plan.SummaryTokens,
 	})
 	if err != nil {

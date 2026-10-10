@@ -284,7 +284,7 @@ func TestValidateToolContinuation(t *testing.T) {
 		PayloadVersion: 1,
 		Depth:          0,
 		CreatedAt:      now,
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleUser,
 			Content: []conversation.EntryPart{
 				{Type: conversation.EntryPartText, Text: stringPtr("Search questions")},
@@ -317,7 +317,7 @@ func TestValidateToolContinuation(t *testing.T) {
 		PayloadVersion: 1,
 		Depth:          1,
 		CreatedAt:      now,
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role:       conversation.EntryRoleAssistant,
 			StopReason: conversation.EntryStopTools,
 			Content: []conversation.EntryPart{
@@ -361,7 +361,7 @@ func TestValidateToolContinuation(t *testing.T) {
 		PayloadVersion: 1,
 		Depth:          2,
 		CreatedAt:      now,
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleToolResult,
 			ToolResult: &conversation.EntryToolResult{
 				CallEntryID: asstEntry.ID,
@@ -396,7 +396,7 @@ func TestValidateToolContinuation(t *testing.T) {
 		PayloadVersion: 1,
 		Depth:          3,
 		CreatedAt:      now,
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleToolResult,
 			ToolResult: &conversation.EntryToolResult{
 				CallEntryID: asstEntry.ID,
@@ -449,7 +449,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 	now := time.Now().UTC()
 	u1 := conversation.ConversationEntry{
 		ID:      "e_u1",
-		Message: conversation.EntryMessage{Role: conversation.EntryRoleUser},
+		Message: &conversation.EntryMessage{Role: conversation.EntryRoleUser},
 	}
 	if !conversation.IsClosedBranchPoint([]conversation.ConversationEntry{u1}) {
 		t.Fatal("user entry must be a valid branch point")
@@ -457,7 +457,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 
 	aPlain := conversation.ConversationEntry{
 		ID: "e_a1",
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role:       conversation.EntryRoleAssistant,
 			StopReason: conversation.EntryStopNormal,
 			Content:    []conversation.EntryPart{{Type: conversation.EntryPartText, Text: stringPtr("ok")}},
@@ -471,7 +471,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 	tc2 := mustProjectCall(t, "tool2", "v1", "c2", `{"arg":"2"}`)
 	aTools := conversation.ConversationEntry{
 		ID: "e_a2",
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role:       conversation.EntryRoleAssistant,
 			StopReason: conversation.EntryStopTools,
 			Content: []conversation.EntryPart{
@@ -486,7 +486,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 
 	r1 := conversation.ConversationEntry{
 		ID: "e_r1",
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleToolResult,
 			ToolResult: &conversation.EntryToolResult{
 				CallEntryID: aTools.ID,
@@ -503,7 +503,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 	// Corrupted result: wrong tool name -> IsClosedBranchPoint MUST be false!
 	r2Corrupt := conversation.ConversationEntry{
 		ID: "e_r2_bad",
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleToolResult,
 			ToolResult: &conversation.EntryToolResult{
 				CallEntryID: aTools.ID,
@@ -520,7 +520,7 @@ func TestIsClosedBranchPoint(t *testing.T) {
 	// Valid closed group
 	r2 := conversation.ConversationEntry{
 		ID: "e_r2",
-		Message: conversation.EntryMessage{
+		Message: &conversation.EntryMessage{
 			Role: conversation.EntryRoleToolResult,
 			ToolResult: &conversation.EntryToolResult{
 				CallEntryID: aTools.ID,

@@ -23,11 +23,6 @@ type entryNodeRow struct {
 func (entryNodeRow) TableName() string { return "conversation_entry_nodes" }
 
 func (row entryNodeRow) toEntry() (conversation.ConversationEntry, error) {
-	msg, err := DecodeEntryMessage(row.PayloadVersion, []byte(row.PayloadJSON))
-	if err != nil {
-		return conversation.ConversationEntry{}, err
-	}
-
 	createdAt, err := parseRFC3339(row.CreatedAt)
 	if err != nil {
 		return conversation.ConversationEntry{}, fmt.Errorf("%w: corrupt created_at for entry %s: %v", conversation.ErrEntryCorrupt, row.ID, err)
@@ -39,17 +34,36 @@ func (row entryNodeRow) toEntry() (conversation.ConversationEntry, error) {
 		pidPtr = &pid
 	}
 
-	return conversation.ConversationEntry{
+	entry := conversation.ConversationEntry{
 		ID:             conversation.EntryID(row.ID),
 		ConversationID: row.ConversationID,
 		ParentID:       pidPtr,
 		Kind:           conversation.EntryKind(row.Kind),
 		PayloadVersion: row.PayloadVersion,
-		Message:        msg,
 		AppendIndex:    row.AppendIndex,
 		Depth:          row.Depth,
 		CreatedAt:      createdAt,
-	}, nil
+	}
+
+	// Decode payload based on kind
+	switch conversation.EntryKind(row.Kind) {
+	case conversation.EntryKindMessage:
+		msg, err := DecodeEntryMessage(row.PayloadVersion, []byte(row.PayloadJSON))
+		if err != nil {
+			return conversation.ConversationEntry{}, err
+		}
+		entry.Message = &msg
+	case conversation.EntryKindCompaction:
+		compaction, err := DecodeEntryCompaction(row.PayloadVersion, []byte(row.PayloadJSON))
+		if err != nil {
+			return conversation.ConversationEntry{}, err
+		}
+		entry.Compaction = &compaction
+	default:
+		return conversation.ConversationEntry{}, fmt.Errorf("%w: unsupported entry kind %s", conversation.ErrEntryCorrupt, row.Kind)
+	}
+
+	return entry, nil
 }
 
 type entryHeadRow struct {

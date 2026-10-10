@@ -111,3 +111,43 @@ func checkDuplicateJSONKeys(data []byte) error {
 	}
 	return nil
 }
+
+func EncodeEntryCompaction(compaction conversation.EntryCompaction) ([]byte, error) {
+	if compaction.Schema == "" {
+		return nil, fmt.Errorf("compaction schema is required")
+	}
+	if compaction.FirstKeptEntryID == "" {
+		return nil, fmt.Errorf("compaction FirstKeptEntryID is required")
+	}
+	return json.Marshal(compaction)
+}
+
+func DecodeEntryCompaction(payloadVersion int, data []byte) (conversation.EntryCompaction, error) {
+	if payloadVersion != 1 {
+		return conversation.EntryCompaction{}, fmt.Errorf("%w: compaction version %d is not supported", conversation.ErrEntryUnsupportedVersion, payloadVersion)
+	}
+
+	if err := checkDuplicateJSONKeys(data); err != nil {
+		return conversation.EntryCompaction{}, err
+	}
+
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+
+	var compaction conversation.EntryCompaction
+	if err := dec.Decode(&compaction); err != nil {
+		return conversation.EntryCompaction{}, fmt.Errorf("%w: decode entry compaction failed: %v", conversation.ErrEntryCorrupt, err)
+	}
+	if dec.More() {
+		return conversation.EntryCompaction{}, fmt.Errorf("%w: trailing data after JSON", conversation.ErrEntryCorrupt)
+	}
+
+	if compaction.Schema == "" {
+		return conversation.EntryCompaction{}, fmt.Errorf("%w: compaction schema is required", conversation.ErrEntryCorrupt)
+	}
+	if compaction.FirstKeptEntryID == "" {
+		return conversation.EntryCompaction{}, fmt.Errorf("%w: compaction FirstKeptEntryID is required", conversation.ErrEntryCorrupt)
+	}
+
+	return compaction, nil
+}

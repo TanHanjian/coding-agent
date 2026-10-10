@@ -116,9 +116,10 @@ func TestCommitRunMessagesInputCloneOwnsMessageAndToken(t *testing.T) {
 func TestCommitRunMessagesResultCloneOwnsEntryHeadAndRun(t *testing.T) {
 	run := runContractFixture()
 	parent, leaf := conversation.EntryID("e_result"), conversation.EntryID("e_final")
+	msg := finalContractMessage()
 	original := CommitRunMessagesResult{
 		Run:     run,
-		Entries: []conversation.ConversationEntry{{ID: leaf, ParentID: &parent, Message: finalContractMessage()}},
+		Entries: []conversation.ConversationEntry{{ID: leaf, ParentID: &parent, Message: &msg}},
 		Head:    conversation.EntryHead{ConversationID: run.ConversationID, ActiveLeafID: &leaf, Version: 5},
 	}
 	cp := original.Clone()
@@ -191,12 +192,13 @@ func TestCommitClonesOwnNestedToolFacts(t *testing.T) {
 	for _, message := range []conversation.EntryMessage{callMessage, resultMessage} {
 		before := message.Clone()
 		input := CommitRunMessagesInput{Messages: []conversation.EntryMessage{message}}
-		output := CommitRunMessagesResult{Entries: []conversation.ConversationEntry{{Message: message}}}
+		msg := message
+		output := CommitRunMessagesResult{Entries: []conversation.ConversationEntry{{Message: &msg}}}
 		inputCopy, outputCopy := input.Clone(), output.Clone()
 		if !reflect.DeepEqual(input, inputCopy) || !reflect.DeepEqual(output, outputCopy) {
 			t.Fatal("tool fact changed during Clone")
 		}
-		for _, copyMessage := range []conversation.EntryMessage{inputCopy.Messages[0], outputCopy.Entries[0].Message} {
+		for _, copyMessage := range []conversation.EntryMessage{inputCopy.Messages[0], *outputCopy.Entries[0].Message} {
 			if copyMessage.ToolResult != nil {
 				copyMessage.ToolResult.CallID = "changed"
 				copyMessage.ToolResult.IsError = true
@@ -205,7 +207,7 @@ func TestCommitClonesOwnNestedToolFacts(t *testing.T) {
 				*copyMessage.Content[0].ToolCall = conversation.SafeToolCall{}
 			}
 		}
-		if !reflect.DeepEqual(input.Messages[0], before) || !reflect.DeepEqual(output.Entries[0].Message, before) {
+		if !reflect.DeepEqual(input.Messages[0], before) || !reflect.DeepEqual(*output.Entries[0].Message, before) {
 			t.Fatal("tool fact clone shares nested references")
 		}
 	}

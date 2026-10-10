@@ -322,7 +322,7 @@ func TestRunServiceIntegrationSuccessfulFinalIsNotVisibleTranscript(t *testing.T
 	if run.Status != agentrun.StatusCompleted || run.FinalEntryID == nil || run.FinishedAt == nil || run.StartedAt == nil || len(path.Entries) != 5 {
 		t.Fatalf("completed Run/path = %+v, %+v", run, path)
 	}
-	if path.Entries[4].ID != *run.FinalEntryID || !reflect.DeepEqual(path.Entries[4].Message, final) || run.LastClosedEntryID != *run.FinalEntryID {
+	if path.Entries[4].ID != *run.FinalEntryID || !reflect.DeepEqual(*path.Entries[4].Message, final) || run.LastClosedEntryID != *run.FinalEntryID {
 		t.Fatalf("full final was invented or replaced by transcript: %+v", path)
 	}
 	for i, id := range []string{"call-1", "call-2"} {
@@ -525,7 +525,7 @@ func TestRunServiceIntegrationBrowserCancellationDoesNotCancelRun(t *testing.T) 
 	}
 	run := f.run(t)
 	path := f.path(t, nil)
-	if run.Status != agentrun.StatusCompleted || run.FinishedAt == nil || run.FinalEntryID == nil || len(path.Entries) != 2 || path.Entries[1].ID != *run.FinalEntryID || !reflect.DeepEqual(path.Entries[1].Message, final) {
+	if run.Status != agentrun.StatusCompleted || run.FinishedAt == nil || run.FinalEntryID == nil || len(path.Entries) != 2 || path.Entries[1].ID != *run.FinalEntryID || !reflect.DeepEqual(*path.Entries[1].Message, final) {
 		t.Fatalf("browser cancellation lost authoritative final: %+v, %+v", run, path)
 	}
 }

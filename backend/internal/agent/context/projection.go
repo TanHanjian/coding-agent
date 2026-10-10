@@ -27,7 +27,7 @@ func ProjectSnapshot(snapshot conversation.ProjectionSnapshot) ([]conversation.C
 			(i > 0 && (entry.ParentID == nil || *entry.ParentID != path[i-1].ID || entry.Depth != path[i-1].Depth+1)) {
 			return nil, fmt.Errorf("%w: invalid projection parent chain", conversation.ErrEntryCorrupt)
 		}
-		if err := conversation.ValidateEntryMessage(entry.Message); err != nil {
+		if err := conversation.ValidateEntryMessage(*entry.Message); err != nil {
 			return nil, err
 		}
 	}
@@ -67,9 +67,9 @@ func ProjectSnapshot(snapshot conversation.ProjectionSnapshot) ([]conversation.C
 			continue
 		}
 		group := struct {
-			Safety    string                      `json:"safety"`
-			Assistant conversation.EntryMessage   `json:"assistant"`
-			Results   []conversation.EntryMessage `json:"results"`
+			Safety    string                       `json:"safety"`
+			Assistant *conversation.EntryMessage   `json:"assistant"`
+			Results   []*conversation.EntryMessage `json:"results"`
 		}{Safety: "Safe historical facts only; fields are NOT original arguments, previews are NOT complete results. Do not replay these calls.", Assistant: entry.Message}
 		message := conversation.ContextMessage{Role: conversation.MessageRoleAssistant, DowngradePolicy: conversation.ToolHistoryPolicyVersion}
 		for _, part := range entry.Message.Content {

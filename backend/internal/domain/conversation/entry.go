@@ -10,21 +10,26 @@ type EntryID string
 type EntryKind string
 
 const (
-	EntryKindMessage EntryKind = "message"
+	EntryKindMessage    EntryKind = "message"
+	EntryKindCompaction EntryKind = "compaction"
 )
 
-const EntryPayloadV1 = 1
+const (
+	EntryPayloadV1 = 1
+	CompactionPayloadV1 = 1
+)
 
 type ConversationEntry struct {
-	ID             EntryID      `json:"id"`
-	ConversationID string       `json:"conversationId"`
-	ParentID       *EntryID     `json:"parentId"`
-	Kind           EntryKind    `json:"kind"`
-	PayloadVersion int          `json:"payloadVersion"`
-	Message        EntryMessage `json:"message"`
-	AppendIndex    int64        `json:"appendIndex"`
-	Depth          int64        `json:"depth"`
-	CreatedAt      time.Time    `json:"createdAt"`
+	ID             EntryID           `json:"id"`
+	ConversationID string            `json:"conversationId"`
+	ParentID       *EntryID          `json:"parentId"`
+	Kind           EntryKind         `json:"kind"`
+	PayloadVersion int               `json:"payloadVersion"`
+	Message        *EntryMessage     `json:"message,omitempty"`
+	Compaction     *EntryCompaction  `json:"compaction,omitempty"`
+	AppendIndex    int64             `json:"appendIndex"`
+	Depth          int64             `json:"depth"`
+	CreatedAt      time.Time         `json:"createdAt"`
 }
 
 type EntryHead struct {
@@ -82,6 +87,26 @@ type EntryToolResult struct {
 	Result      SafeToolResult `json:"result"`
 }
 
+// EntryCompaction 是压缩摘要的 payload
+type EntryCompaction struct {
+	Schema           string   `json:"schema"` // "structured-v1"
+	FirstKeptEntryID EntryID  `json:"firstKeptEntryId"`
+	SourceBoundary   []EntryID `json:"sourceBoundary"` // 被压缩的前缀 entry IDs
+	TokensBefore     int      `json:"tokensBefore"`
+	Summary          CompactionSummary `json:"summary"`
+}
+
+// CompactionSummary 是结构化摘要内容
+type CompactionSummary struct {
+	Version        int      `json:"version"`        // 新增：schema 版本
+	Goal           string   `json:"goal"`
+	ConfirmedFacts []string `json:"confirmedFacts"`
+	Decisions      []string `json:"decisions"`
+	Constraints    []string `json:"constraints"`    // 新增：约束条件
+	OpenQuestions  []string `json:"openQuestions"`  // 新增：未解决问题
+	Context        string   `json:"context"`        // 保留：兼容旧字段
+}
+
 func NewEntryID() (EntryID, error) {
 	var bytes [16]byte
 	if _, err := rand.Read(bytes[:]); err != nil {
@@ -96,7 +121,14 @@ func (e ConversationEntry) Clone() ConversationEntry {
 		pid := *e.ParentID
 		cp.ParentID = &pid
 	}
-	cp.Message = e.Message.Clone()
+	if e.Message != nil {
+		msg := e.Message.Clone()
+		cp.Message = &msg
+	}
+	if e.Compaction != nil {
+		comp := e.Compaction.Clone()
+		cp.Compaction = &comp
+	}
 	return cp
 }
 
@@ -143,6 +175,29 @@ func (t HeadToken) Clone() HeadToken {
 	if t.ActiveLeafID != nil {
 		id := *t.ActiveLeafID
 		cp.ActiveLeafID = &id
+	}
+	return cp
+}
+
+func (c EntryCompaction) Clone() EntryCompaction {
+	cp := c
+	if c.SourceBoundary != nil {
+		cp.SourceBoundary = make([]EntryID, len(c.SourceBoundary))
+		copy(cp.SourceBoundary, c.SourceBoundary)
+	}
+	cp.Summary = c.Summary.Clone()
+	return cp
+}
+
+func (s CompactionSummary) Clone() CompactionSummary {
+	cp := s
+	if s.ConfirmedFacts != nil {
+		cp.ConfirmedFacts = make([]string, len(s.ConfirmedFacts))
+		copy(cp.ConfirmedFacts, s.ConfirmedFacts)
+	}
+	if s.Decisions != nil {
+		cp.Decisions = make([]string, len(s.Decisions))
+		copy(cp.Decisions, s.Decisions)
 	}
 	return cp
 }

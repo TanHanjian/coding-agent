@@ -45,7 +45,7 @@ func TestEntryORMReadsLegacyTextAndWritesCompatibleRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	decoded, err := DecodeEntryMessage(payloadVersion, []byte(rawPayload))
-	if storageType != "text" || parent != "historical-entry" || rawCreated != formatTime(appended.Entry.CreatedAt) || err != nil || !reflect.DeepEqual(decoded, appended.Entry.Message) {
+	if storageType != "text" || parent != "historical-entry" || rawCreated != formatTime(appended.Entry.CreatedAt) || err != nil || !reflect.DeepEqual(decoded, *appended.Entry.Message) {
 		t.Fatalf("new row = %s, %s, %s, %s, %+v, %v", storageType, rawPayload, parent, rawCreated, decoded, err)
 	}
 }

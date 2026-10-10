@@ -196,7 +196,7 @@ func TestAgentRunLifecycleSuccessfulLoopAndFinal(t *testing.T) {
 	if err != nil || len(path.Entries) != 5 || *path.Entries[4].Message.Content[0].Text != "approved text" {
 		t.Fatalf("complete final did not remain distinct from cumulative text: %+v %v", path, err)
 	}
-	encoded, err := EncodeEntryMessage(path.Entries[1].Message)
+	encoded, err := EncodeEntryMessage(*path.Entries[1].Message)
 	if err != nil || strings.Contains(string(encoded), "undeclared") {
 		t.Fatalf("raw call bypass: %s %v", encoded, err)
 	}

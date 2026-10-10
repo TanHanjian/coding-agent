@@ -62,6 +62,7 @@ type EntryTree interface {
 	ReadPath(ctx context.Context, query PathQuery) (EntryPath, error)
 	ListChildren(ctx context.Context, query ChildrenQuery) (ChildrenPage, error)
 	Append(ctx context.Context, input AppendEntryInput) (AppendEntryResult, error)
+	AppendCompaction(ctx context.Context, input AppendCompactionInput) (AppendCompactionResult, error)
 	MoveHead(ctx context.Context, input MoveHeadInput) (EntryHead, error)
 }
 
@@ -109,4 +110,15 @@ type MoveHeadInput struct {
 	ConversationID string
 	ExpectedHead   HeadToken
 	TargetID       *EntryID
+}
+
+type AppendCompactionInput struct {
+	ConversationID string
+	ExpectedHead   HeadToken
+	Compaction     EntryCompaction
+}
+
+type AppendCompactionResult struct {
+	Entry ConversationEntry
+	Head  EntryHead
 }

@@ -396,13 +396,141 @@ func (r *EntryTreeRepository) appendTxWithSnapshot(ctx context.Context, tx *gorm
 		ParentID:       pidPtr,
 		Kind:           conversation.EntryKindMessage,
 		PayloadVersion: conversation.EntryPayloadV1,
-		Message:        msgCopy,
+		Message:        &msgCopy,
 		AppendIndex:    appendIndex,
 		Depth:          depth,
 		CreatedAt:      now,
 	}
 
 	return conversation.AppendEntryResult{
+		Entry: newEntry,
+		Head:  newHead,
+	}, nil
+}
+
+func (r *EntryTreeRepository) AppendCompaction(ctx context.Context, input conversation.AppendCompactionInput) (conversation.AppendCompactionResult, error) {
+	encodedJSON, err := EncodeEntryCompaction(input.Compaction)
+	if err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+	if len(encodedJSON) > r.maxPayloadBytes {
+		return conversation.AppendCompactionResult{}, conversation.NewEntryError(
+			conversation.EntryErrCodeCapacity,
+			"",
+			fmt.Sprintf("compaction payload size %d exceeds max bytes %d", len(encodedJSON), r.maxPayloadBytes),
+			conversation.ErrEntryCapacity,
+		)
+	}
+
+	var result conversation.AppendCompactionResult
+	err = r.db.WithinTx(ctx, func(ctx context.Context, tx *gorm.DB) error {
+		var err error
+		result, err = r.appendCompactionTx(ctx, tx, input, encodedJSON)
+		return err
+	})
+	if err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+	return result, nil
+}
+
+func (r *EntryTreeRepository) appendCompactionTx(ctx context.Context, tx *gorm.DB, input conversation.AppendCompactionInput, encodedJSON []byte) (conversation.AppendCompactionResult, error) {
+	if _, err := checkConversationExists(ctx, tx, input.ConversationID); err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+
+	now := r.now().UTC()
+	head, err := lazyInitHeadTx(ctx, tx, input.ConversationID, now)
+	if err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+
+	// Verify expected head (CAS)
+	if head.Version != input.ExpectedHead.Version {
+		return conversation.AppendCompactionResult{}, domainerr.ErrConflict
+	}
+	if (head.ActiveLeafID == nil && input.ExpectedHead.ActiveLeafID != nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID == nil) ||
+		(head.ActiveLeafID != nil && input.ExpectedHead.ActiveLeafID != nil && *head.ActiveLeafID != *input.ExpectedHead.ActiveLeafID) {
+		return conversation.AppendCompactionResult{}, domainerr.ErrConflict
+	}
+
+	// Get next append index
+	var maxIndex entryAppendIndexRow
+	if err := tx.WithContext(ctx).Model(&entryNodeRow{}).
+		Select("MAX(append_index) AS max_index").
+		Where("conversation_id = ?", input.ConversationID).Scan(&maxIndex).Error; err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+	var appendIndex int64 = 1
+	if maxIndex.MaxIndex != nil {
+		appendIndex = *maxIndex.MaxIndex + 1
+	}
+
+	newID, err := r.newID()
+	if err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+
+	var parentID *string
+	if head.ActiveLeafID != nil {
+		id := string(*head.ActiveLeafID)
+		parentID = &id
+	}
+
+	nowStr := now.Format(time.RFC3339Nano)
+	row := entryNodeRow{
+		ID:             string(newID),
+		ConversationID: input.ConversationID,
+		ParentID:       parentID,
+		Kind:           string(conversation.EntryKindCompaction),
+		PayloadVersion: 1,
+		PayloadJSON:    string(encodedJSON),
+		AppendIndex:    appendIndex,
+		Depth:          0, // Compaction entries don't participate in depth calculation
+		CreatedAt:      nowStr,
+	}
+	if err := tx.WithContext(ctx).Create(&row).Error; err != nil {
+		return conversation.AppendCompactionResult{}, err
+	}
+
+	// Update head with CAS check
+	res := tx.WithContext(ctx).Model(&entryHeadRow{}).
+		Where("conversation_id = ? AND version = ? AND active_leaf_id IS ?", input.ConversationID, input.ExpectedHead.Version, parentID).
+		Updates(map[string]any{
+			"active_leaf_id": string(newID),
+			"version":        gorm.Expr("version + 1"),
+			"updated_at":     nowStr,
+		})
+	if res.Error != nil {
+		return conversation.AppendCompactionResult{}, res.Error
+	}
+	if res.RowsAffected != 1 {
+		return conversation.AppendCompactionResult{}, domainerr.ErrConflict
+	}
+
+	newHead := conversation.EntryHead{
+		ConversationID: input.ConversationID,
+		ActiveLeafID:   &newID,
+		Version:        head.Version + 1,
+		UpdatedAt:      now,
+	}
+
+	compactionCopy := input.Compaction
+	newEntry := conversation.ConversationEntry{
+		ID:             newID,
+		ConversationID: input.ConversationID,
+		ParentID:       head.ActiveLeafID,
+		Kind:           conversation.EntryKindCompaction,
+		PayloadVersion: 1,
+		Message:        nil,
+		Compaction:     &compactionCopy,
+		AppendIndex:    appendIndex,
+		Depth:          0,
+		CreatedAt:      now,
+	}
+
+	return conversation.AppendCompactionResult{
 		Entry: newEntry,
 		Head:  newHead,
 	}, nil

@@ -145,8 +145,8 @@ func ValidateToolContinuation(parentPath []ConversationEntry, next EntryMessage)
 	if next.Role == EntryRoleAssistant {
 		pathCallIDs := make(map[string]bool)
 		for _, entry := range parentPath {
-			if entry.Message.Role == EntryRoleAssistant {
-				for _, call := range extractDeclaredCalls(entry.Message) {
+			if entry.Message != nil && entry.Message.Role == EntryRoleAssistant {
+				for _, call := range extractDeclaredCalls(*entry.Message) {
 					pathCallIDs[call.ID] = true
 				}
 			}
@@ -168,7 +168,7 @@ func ValidateToolContinuation(parentPath []ConversationEntry, next EntryMessage)
 		return nil
 
 	case EntryRoleAssistant:
-		declaredCalls := extractDeclaredCalls(parent.Message)
+		declaredCalls := extractDeclaredCalls(*parent.Message)
 		if len(declaredCalls) > 0 {
 			if next.Role != EntryRoleToolResult {
 				return fmt.Errorf("%w: assistant has pending tool calls, expected toolResult but got %q", domainerr.ErrConflict, next.Role)
@@ -235,9 +235,9 @@ func validateToolGroup(path []ConversationEntry) (asstEntry *ConversationEntry, 
 	var resultsRev []ConversationEntry
 	asstIdx := -1
 	for i := len(path) - 1; i >= 0; i-- {
-		if path[i].Message.Role == EntryRoleToolResult {
+		if path[i].Message != nil && path[i].Message.Role == EntryRoleToolResult {
 			resultsRev = append(resultsRev, path[i])
-		} else if path[i].Message.Role == EntryRoleAssistant {
+		} else if path[i].Message != nil && path[i].Message.Role == EntryRoleAssistant {
 			asstIdx = i
 			break
 		} else {
@@ -249,7 +249,7 @@ func validateToolGroup(path []ConversationEntry) (asstEntry *ConversationEntry, 
 	}
 
 	asst := &path[asstIdx]
-	declaredCalls = extractDeclaredCalls(asst.Message)
+	declaredCalls = extractDeclaredCalls(*asst.Message)
 	N := len(declaredCalls)
 	k := len(resultsRev)
 
@@ -364,7 +364,7 @@ func IsClosedBranchPoint(path []ConversationEntry) bool {
 	case EntryRoleUser:
 		return true
 	case EntryRoleAssistant:
-		calls := extractDeclaredCalls(last.Message)
+		calls := extractDeclaredCalls(*last.Message)
 		return len(calls) == 0
 	case EntryRoleToolResult:
 		_, _, _, isClosed, err := validateToolGroup(path)

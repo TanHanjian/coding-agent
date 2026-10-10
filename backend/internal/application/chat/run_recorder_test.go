@@ -89,7 +89,8 @@ func (s *recorderStore) CommitRunMessages(ctx context.Context, input CommitRunMe
 		}
 		next.HeadVersion++
 		id := conversation.EntryID(fmt.Sprintf("e_%d", next.HeadVersion))
-		entries[i] = conversation.ConversationEntry{ID: id, Message: message.Clone()}
+		msg := message.Clone()
+		entries[i] = conversation.ConversationEntry{ID: id, Message: &msg}
 		next.LastEntryID = id
 	}
 	if next.Status == agentrun.StatusRunning {
