@@ -191,8 +191,12 @@ func (s *DefaultBoundarySelector) SelectPrefix(ctx context.Context, input Bounda
 		}
 	}
 
-	// If we must keep everything from the start, no compaction possible
+	// If we must keep everything from the start, check if it fits
 	if mustKeepFromIndex == 0 {
+		// All content must be kept - check if it fits in budget
+		if input.CurrentEstimate > input.AvailableTokens {
+			return BoundaryResult{}, fmt.Errorf("no compactable prefix: indivisible content exceeds budget (kept=%d > budget=%d)", input.CurrentEstimate, input.AvailableTokens)
+		}
 		return BoundaryResult{
 			KeptMessages:      input.Snapshot.Messages,
 			FirstKeptEntryID:  s.firstEntryID(groups[0]),

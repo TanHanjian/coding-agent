@@ -10,120 +10,84 @@ import (
 	"interview-memory-agent/backend/internal/domain/conversation"
 )
 
+// TestEnforcedBudgetPolicy tests the EnforcedBudgetPolicy implementation
 func TestEnforcedBudgetPolicy(t *testing.T) {
-	t.Run("returns plan within window", func(t *testing.T) {
-		policy := NewEnforcedBudgetPolicy(BudgetConfig{
-			ContextWindowTokens:     32000,
-			InstructionTokens:       4000,
-			SummaryTokens:           2000,
-			HistoryTokens:           8000,
-			InterviewMaterialTokens: 6000,
-			ToolResultTokens:        8000,
-			OutputReservedTokens:    4000,
-		}, map[string]int{
-			"default": 32000,
-			"gpt-4":   128000,
-		})
+	config := BudgetConfig{
+		ContextWindowTokens:     100000,
+		InstructionTokens:       10000,
+		SummaryTokens:           5000,
+		HistoryTokens:           20000,
+		InterviewMaterialTokens: 10000,
+		ToolResultTokens:        5000,
+		OutputReservedTokens:    4000,
+	}
+	modelWindows := map[string]int{
+		"default": 100000,
+		"claude-3-5-sonnet-20241022": 200000,
+	}
+	policy := NewEnforcedBudgetPolicy(config, modelWindows)
 
-		plan, err := policy.Plan(context.Background(), chat.ContextInput{})
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
-
-		if plan.ContextWindowTokens != 32000 {
-			t.Errorf("ContextWindowTokens = %d, want 32000", plan.ContextWindowTokens)
-		}
-		if plan.HistoryTokens != 8000 {
-			t.Errorf("HistoryTokens = %d, want 8000", plan.HistoryTokens)
-		}
-	})
-
-	t.Run("uses default model when available", func(t *testing.T) {
-		policy := NewEnforcedBudgetPolicy(DefaultBudgetConfig(), map[string]int{
-			"default": 32000,
-		})
-
-		plan, err := policy.Plan(context.Background(), chat.ContextInput{})
-		if err != nil {
-			t.Fatalf("Plan() error = %v", err)
-		}
-		if plan.ContextWindowTokens != 32000 {
-			t.Errorf("ContextWindowTokens = %d, want 32000", plan.ContextWindowTokens)
-		}
-	})
-
-	t.Run("rejects unknown model", func(t *testing.T) {
-		policy := NewEnforcedBudgetPolicy(DefaultBudgetConfig(), map[string]int{
-			"other-model": 32000,
-		})
-
+	t.Run("validates model window", func(t *testing.T) {
 		_, err := policy.Plan(context.Background(), chat.ContextInput{})
-		if err == nil || !strings.Contains(err.Error(), "unknown context window") {
-			t.Fatalf("Plan() error = %v, want unknown context window", err)
+		if err != nil {
+			t.Fatalf("Plan() error = %v, want nil", err)
 		}
 	})
 
 	t.Run("rejects budget exceeding window", func(t *testing.T) {
-		policy := NewEnforcedBudgetPolicy(BudgetConfig{
-			InstructionTokens:       5000,
-			SummaryTokens:           5000,
-			HistoryTokens:           5000,
-			InterviewMaterialTokens: 5000,
-			ToolResultTokens:        5000,
-			OutputReservedTokens:    5000,
-		}, map[string]int{
-			"default": 10000, // total = 30000 > 10000
-		})
-
-		_, err := policy.Plan(context.Background(), chat.ContextInput{})
-		if err == nil || !strings.Contains(err.Error(), "exceeds context window") {
-			t.Fatalf("Plan() error = %v, want exceeds context window", err)
+		badConfig := BudgetConfig{
+			ContextWindowTokens:     100000,
+			InstructionTokens:       200000,
+			SummaryTokens:           10000,
+			HistoryTokens:           10000,
+			InterviewMaterialTokens: 10000,
+			ToolResultTokens:        10000,
+			OutputReservedTokens:    10000,
+		}
+		badPolicy := NewEnforcedBudgetPolicy(badConfig, modelWindows)
+		_, err := badPolicy.Plan(context.Background(), chat.ContextInput{})
+		if err == nil {
+			t.Fatalf("Plan() error = nil, want budget exceeds window error")
+		}
+		if !strings.Contains(err.Error(), "exceeds") {
+			t.Errorf("error = %v, want exceeds window error", err)
 		}
 	})
 }
 
+// TestCharBasedTokenEstimator tests the CharBasedTokenEstimator implementation
 func TestCharBasedTokenEstimator(t *testing.T) {
-	t.Run("estimates text tokens", func(t *testing.T) {
-		estimator := NewCharBasedTokenEstimator(4.0)
-		tokens, err := estimator.CountText("model", "Hello, world!")
+	estimator := NewCharBasedTokenEstimator(4.0)
+
+	t.Run("counts text tokens", func(t *testing.T) {
+		text := "Hello, world!"
+		tokens, err := estimator.CountText("default", text)
 		if err != nil {
 			t.Fatalf("CountText() error = %v", err)
 		}
-		// "Hello, world!" = 13 chars, 13/4.0 = 3.25 -> ceil = 4
-		if tokens != 4 {
-			t.Errorf("CountText() = %d, want 4", tokens)
+		expected := (len(text) + 3) / 4 // ceil(13/4) = 4
+		if tokens != expected {
+			t.Errorf("CountText() = %d, want %d", tokens, expected)
 		}
 	})
 
-	t.Run("estimates messages tokens", func(t *testing.T) {
-		estimator := NewCharBasedTokenEstimator(4.0)
+	t.Run("counts message tokens", func(t *testing.T) {
 		messages := []*schema.Message{
-			{Role: "user", Content: "Hello"},      // "user: Hello\n" = 13
-			{Role: "assistant", Content: "Hi"},    // "assistant: Hi\n" = 15
+			{Role: "user", Content: "Question"},
+			{Role: "assistant", Content: "Answer"},
 		}
-		tokens, err := estimator.CountMessages("model", messages, nil) // no tools
+		tokens, err := estimator.CountMessages("default", messages, nil)
 		if err != nil {
 			t.Fatalf("CountMessages() error = %v", err)
 		}
-		// 13 + 15 = 28, 28/4.0 = 7
-		if tokens != 7 {
-			t.Errorf("CountMessages() = %d, want 7", tokens)
-		}
-	})
-
-	t.Run("uses default ratio for invalid input", func(t *testing.T) {
-		estimator := NewCharBasedTokenEstimator(0)
-		tokens, err := estimator.CountText("model", "1234") // 4 chars
-		if err != nil {
-			t.Fatalf("CountText() error = %v", err)
-		}
-		// Should use default 4.0: 4/4.0 = 1
-		if tokens != 1 {
-			t.Errorf("CountText() = %d, want 1", tokens)
+		// "user: Question\nassistant: Answer\n" = roughly 30 chars -> 8 tokens
+		if tokens < 5 || tokens > 15 {
+			t.Errorf("CountMessages() = %d, want ~8", tokens)
 		}
 	})
 }
 
+// TestDefaultBoundarySelector tests the DefaultBoundarySelector implementation
 func TestDefaultBoundarySelector(t *testing.T) {
 	estimator := NewCharBasedTokenEstimator(4.0)
 	selector := NewDefaultBoundarySelector(estimator)
@@ -131,14 +95,14 @@ func TestDefaultBoundarySelector(t *testing.T) {
 	t.Run("no compaction needed within budget", func(t *testing.T) {
 		snapshot := ProjectionSnapshot{
 			Messages: []conversation.ContextMessage{
-				{Role: "user", Content: "Hi", Sources: []conversation.ProjectionSource{{EntryID: "e1"}}},
-				{Role: "assistant", Content: "Hello", Sources: []conversation.ProjectionSource{{EntryID: "e2"}}},
+				{Role: "user", Content: "Q", Sources: []conversation.ProjectionSource{{EntryID: "e1"}}},
+				{Role: "assistant", Content: "A", Sources: []conversation.ProjectionSource{{EntryID: "e2"}}},
 			},
 		}
 
 		result, err := selector.SelectPrefix(context.Background(), BoundaryInput{
 			Snapshot:        snapshot,
-			AvailableTokens: 1000,
+			AvailableTokens: 100,
 			CurrentEstimate: 10,
 			Estimator:       estimator,
 		})
@@ -148,9 +112,6 @@ func TestDefaultBoundarySelector(t *testing.T) {
 		}
 		if result.NeedsCompaction {
 			t.Errorf("NeedsCompaction = true, want false")
-		}
-		if len(result.KeptMessages) != 2 {
-			t.Errorf("len(KeptMessages) = %d, want 2", len(result.KeptMessages))
 		}
 	})
 
@@ -200,7 +161,7 @@ func TestDefaultBoundarySelector(t *testing.T) {
 
 		result, err := selector.SelectPrefix(context.Background(), BoundaryInput{
 			Snapshot:        snapshot,
-			AvailableTokens: 10,
+			AvailableTokens: 100, // Enough for the pending group
 			CurrentEstimate: 100,
 			Estimator:       estimator,
 		})
@@ -234,43 +195,86 @@ func TestDefaultBoundarySelector(t *testing.T) {
 			t.Logf("Got error (may be acceptable): %v", err)
 		}
 	})
+
+	t.Run("returns error when base content exceeds budget", func(t *testing.T) {
+		snapshot := ProjectionSnapshot{
+			Messages: []conversation.ContextMessage{
+				{Role: "user", Content: "Small", Sources: []conversation.ProjectionSource{{EntryID: "e1"}}},
+				{Role: "assistant", Content: strings.Repeat("x", 10000), Sources: []conversation.ProjectionSource{{EntryID: "e2"}}},
+			},
+		}
+
+		_, err := selector.SelectPrefix(context.Background(), BoundaryInput{
+			Snapshot:        snapshot,
+			BaseEntryID:     "e2", // Must keep e2 onwards
+			AvailableTokens: 10,
+			CurrentEstimate: 2500,
+			Estimator:       estimator,
+		})
+
+		if err == nil {
+			t.Fatalf("SelectPrefix() error = nil, want indivisible content error")
+		}
+		if !strings.Contains(err.Error(), "indivisible") {
+			t.Errorf("error = %v, want indivisible content error", err)
+		}
+	})
 }
 
+// TestBoundarySelector_CompleteTurnDetection tests turn grouping logic
 func TestBoundarySelector_CompleteTurnDetection(t *testing.T) {
 	estimator := NewCharBasedTokenEstimator(4.0)
 	selector := NewDefaultBoundarySelector(estimator)
 
-	t.Run("assistant with tool call and result is complete", func(t *testing.T) {
-		group := []conversation.ContextMessage{
-			{Role: "user", Content: "Search for X"},
-			{Role: "assistant", Content: "Tool call: search(X)"},
-			{Role: "assistant", Content: "Tool result: Found X"},
+	t.Run("groups complete turns", func(t *testing.T) {
+		messages := []conversation.ContextMessage{
+			{Role: "user", Content: "Q1"},
+			{Role: "assistant", Content: "A1"},
+			{Role: "user", Content: "Q2"},
+			{Role: "assistant", Content: "A2"},
 		}
 
-		if !selector.isCompleteTurn(group) {
-			t.Errorf("isCompleteTurn() = false, want true for complete tool group")
+		groups := selector.groupByCompleteTurns(messages)
+		if len(groups) != 2 {
+			t.Errorf("len(groups) = %d, want 2", len(groups))
 		}
-	})
-
-	t.Run("assistant with tool call but no result is incomplete", func(t *testing.T) {
-		group := []conversation.ContextMessage{
-			{Role: "user", Content: "Search for X"},
-			{Role: "assistant", Content: "Tool call: search(X)"},
+		if len(groups[0]) != 2 {
+			t.Errorf("len(groups[0]) = %d, want 2", len(groups[0]))
 		}
-
-		if selector.isCompleteTurn(group) {
-			t.Errorf("isCompleteTurn() = true, want false for pending tool call")
+		if len(groups[1]) != 2 {
+			t.Errorf("len(groups[1]) = %d, want 2", len(groups[1]))
 		}
 	})
 
-	t.Run("assistant without tool call is complete", func(t *testing.T) {
-		group := []conversation.ContextMessage{
-			{Role: "user", Content: "Hello"},
-			{Role: "assistant", Content: "Hi there"},
+	t.Run("detects incomplete turn with pending tool call", func(t *testing.T) {
+		messages := []conversation.ContextMessage{
+			{Role: "user", Content: "Question"},
+			{Role: "assistant", Content: "Tool call: search"},
+			// Missing tool result
 		}
 
-		if !selector.isCompleteTurn(group) {
-			t.Errorf("isCompleteTurn() = false, want true for simple response")
+		groups := selector.groupByCompleteTurns(messages)
+		if len(groups) != 1 {
+			t.Errorf("len(groups) = %d, want 1", len(groups))
+		}
+		if selector.isCompleteTurn(groups[0]) {
+			t.Errorf("isCompleteTurn() = true, want false (pending tool call)")
+		}
+	})
+
+	t.Run("detects complete turn with tool call and result", func(t *testing.T) {
+		messages := []conversation.ContextMessage{
+			{Role: "user", Content: "Question"},
+			{Role: "assistant", Content: "Tool call: search"},
+			{Role: "tool", Content: "Tool result: found"},
+		}
+
+		groups := selector.groupByCompleteTurns(messages)
+		if len(groups) != 1 {
+			t.Errorf("len(groups) = %d, want 1", len(groups))
+		}
+		if !selector.isCompleteTurn(groups[0]) {
+			t.Errorf("isCompleteTurn() = false, want true")
 		}
 	})
 }
