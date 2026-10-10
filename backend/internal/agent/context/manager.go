@@ -21,8 +21,11 @@ type Manager struct {
 	projectionReader   conversation.ProjectionReader
 	budgetPolicy       BudgetPolicy
 	tokenEstimator     TokenEstimator
+	boundarySelector   BoundarySelector
 	historySelector    HistorySelector
 	summaryCoordinator SummaryCoordinator
+	compactionWriter   conversation.CompactionWriter
+	compactionReader   conversation.CompactionReader
 	renderer           PreparedContextRenderer
 }
 
@@ -47,6 +50,13 @@ func WithTokenEstimator(estimator TokenEstimator) Option {
 	}
 }
 
+// WithBoundarySelector reserves the boundary-selection injection point.
+func WithBoundarySelector(selector BoundarySelector) Option {
+	return func(manager *Manager) {
+		manager.boundarySelector = selector
+	}
+}
+
 // WithHistorySelector reserves the history-window injection point.
 func WithHistorySelector(selector HistorySelector) Option {
 	return func(manager *Manager) {
@@ -58,6 +68,20 @@ func WithHistorySelector(selector HistorySelector) Option {
 func WithSummaryCoordinator(coordinator SummaryCoordinator) Option {
 	return func(manager *Manager) {
 		manager.summaryCoordinator = coordinator
+	}
+}
+
+// WithCompactionWriter reserves the compaction-writer injection point.
+func WithCompactionWriter(writer conversation.CompactionWriter) Option {
+	return func(manager *Manager) {
+		manager.compactionWriter = writer
+	}
+}
+
+// WithCompactionReader reserves the compaction-reader injection point.
+func WithCompactionReader(reader conversation.CompactionReader) Option {
+	return func(manager *Manager) {
+		manager.compactionReader = reader
 	}
 }
 
@@ -90,6 +114,9 @@ func (m *Manager) Prepare(ctx context.Context, input chat.ContextInput) (chat.Pr
 		return chat.PreparedContext{}, errors.New("agent context: manager fallback is required")
 	}
 	if m.projectionReader != nil {
+		if m.compactionPipelineReady() {
+			return m.prepareWithCompaction(ctx, input)
+		}
 		if m.pipelineReady() {
 			return chat.PreparedContext{}, errors.New("agent context: projection-aware policy pipeline is not implemented")
 		}
@@ -161,6 +188,15 @@ func (m *Manager) prepareWithPolicies(ctx context.Context, input chat.ContextInp
 		History: selection,
 		Summary: summary,
 	})
+}
+
+func (m *Manager) compactionPipelineReady() bool {
+	return m.budgetPolicy != nil &&
+		m.tokenEstimator != nil &&
+		m.boundarySelector != nil &&
+		m.summaryCoordinator != nil &&
+		m.compactionWriter != nil &&
+		m.compactionReader != nil
 }
 
 var _ chat.ContextManager = (*Manager)(nil)
