@@ -36,14 +36,14 @@ func TestHealthHandler(t *testing.T) {
 
 func TestNewChatExecutorRequiresProjectionReader(t *testing.T) {
 	cfg := config.Config{OpenAI: config.OpenAIConfig{APIKey: "test-key", Model: "test-model"}}
-	_, err := newChatExecutor(t.Context(), cfg, interview.ToolDependencies{}, nil)
+	_, err := newChatExecutor(t.Context(), cfg, interview.ToolDependencies{}, nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "projection reader is required") {
 		t.Fatalf("missing reader error = %v", err)
 	}
 }
 
 func TestNewChatExecutorRequiresChatConfiguration(t *testing.T) {
-	_, err := newChatExecutor(t.Context(), config.Config{}, interview.ToolDependencies{}, nil)
+	_, err := newChatExecutor(t.Context(), config.Config{}, interview.ToolDependencies{}, nil, nil)
 	if err == nil {
 		t.Fatal("expected missing chat configuration error")
 	}

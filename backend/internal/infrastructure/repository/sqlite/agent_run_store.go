@@ -31,6 +31,11 @@ func NewAgentRunRepository(db *storage.DB) (*AgentRunRepository, error) {
 	return &AgentRunRepository{db: db, tree: tree, turns: NewChatTurnRepository(db)}, nil
 }
 
+// GetEntryTree returns the underlying EntryTree for context management.
+func (r *AgentRunRepository) GetEntryTree() conversation.EntryTree {
+	return r.tree
+}
+
 // BeginTurn returns only committed results. A retry resolves the original Run
 // or legacy pair before checking busy; legacy-only turns are never backfilled.
 func (r *AgentRunRepository) BeginTurn(ctx context.Context, input chat.BeginTurnInput) (chat.BeginTurnResult, error) {

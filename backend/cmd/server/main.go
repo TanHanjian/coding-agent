@@ -24,6 +24,8 @@ import (
 	cozeloopinfra "interview-memory-agent/backend/internal/infrastructure/cozeloop"
 	"interview-memory-agent/backend/internal/infrastructure/repository/sqlite"
 	"interview-memory-agent/backend/internal/infrastructure/storage"
+
+	einoschema "github.com/cloudwego/eino/schema"
 	"interview-memory-agent/backend/internal/transport/httpanswer"
 	"interview-memory-agent/backend/internal/transport/httpchat"
 	"interview-memory-agent/backend/internal/transport/httpconversation"
@@ -95,7 +97,7 @@ func main() {
 	chatExecutor, err := newChatExecutor(context.Background(), cfg, interview.ToolDependencies{
 		QuestionSearcher:      questionService,
 		QuestionContextReader: questionService,
-	}, agentRunStore, promptProvider)
+	}, agentRunStore, agentRunStore.GetEntryTree(), promptProvider)
 	if err != nil {
 		slog.Error("configure chat executor", "error", err)
 		closeCozeLoop(cozeLoopClient)
@@ -155,12 +157,15 @@ func closeCozeLoop(client *cozeloopinfra.Client) {
 
 // newChatExecutor 仅负责应用装配：把进程级模型配置、面试 Graph Builder 和
 // 应用层 Eino Executor 连接起来。提示词、工具、检索和 Graph 策略仍归 Builder 所有。
-func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, projectionReader conversation.ProjectionReader, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
+func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.ToolDependencies, projectionReader conversation.ProjectionReader, entryTree conversation.EntryTree, promptProviders ...agentprompt.Provider) (chat.Executor, error) {
 	if err := cfg.ValidateForChat(); err != nil {
 		return nil, fmt.Errorf("validate chat configuration: %w", err)
 	}
 	if projectionReader == nil {
 		return nil, fmt.Errorf("configure chat context: projection reader is required")
+	}
+	if entryTree == nil {
+		return nil, fmt.Errorf("configure chat context: entry tree is required")
 	}
 	chatModel, err := agentopenai.NewChatModel(ctx, cfg.OpenAI)
 	if err != nil {
@@ -178,9 +183,49 @@ func newChatExecutor(ctx context.Context, cfg config.Config, toolDeps interview.
 	if err != nil {
 		return nil, fmt.Errorf("create interview runtime builder: %w", err)
 	}
+
+	// Phase 4: 创建 Context Compaction 组件
+	// 1. 预算策略：配置模型窗口大小
+	modelWindows := map[string]int{
+		cfg.OpenAI.Model: 128000, // 默认值，实际应从模型配置读取
+		"default":        128000,
+	}
+	budgetConfig := agentcontext.DefaultBudgetConfig()
+	budgetPolicy := agentcontext.NewEnforcedBudgetPolicy(budgetConfig, modelWindows)
+
+	// 2. Token 估算器：字符/token 比例 4.0
+	tokenEstimator := agentcontext.NewCharBasedTokenEstimator(4.0)
+
+	// 3. 边界选择器
+	boundarySelector := agentcontext.NewDefaultBoundarySelector(tokenEstimator)
+
+	// 4. 摘要生成器：包装 ChatModel 为函数式接口
+	modelInvoker := func(ctx context.Context, messages []*einoschema.Message) (*einoschema.Message, error) {
+		resp, err := chatModel.Generate(ctx, messages)
+		if err != nil {
+			return nil, err
+		}
+		return resp, nil
+	}
+	contextSummarizer := agentcontext.NewEinoContextSummarizer(modelInvoker)
+
+	// 5. 摘要协调器
+	summaryCoordinator := agentcontext.NewDefaultSummaryCoordinator(contextSummarizer, tokenEstimator)
+
+	// 6. Compaction 适配器
+	compactionAdapter := sqlite.NewCompactionAdapter(entryTree)
+
 	chatExecutor, err := eino.NewExecutor(
 		runtimeBuilder,
-		eino.WithContextManager(agentcontext.NewManager(agentcontext.WithProjectionReader(projectionReader))),
+		eino.WithContextManager(agentcontext.NewManager(
+			agentcontext.WithProjectionReader(projectionReader),
+			agentcontext.WithBudgetPolicy(budgetPolicy),
+			agentcontext.WithTokenEstimator(tokenEstimator),
+			agentcontext.WithBoundarySelector(boundarySelector),
+			agentcontext.WithSummaryCoordinator(summaryCoordinator),
+			agentcontext.WithCompactionWriter(compactionAdapter),
+			agentcontext.WithCompactionReader(compactionAdapter),
+		)),
 		eino.WithGraphDebugLogging(cfg.AgentDebug),
 	)
 	if err != nil {
