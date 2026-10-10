@@ -1,6 +1,6 @@
 # Phase 4 技术设计：Context Compaction 与预算协调
 
-> 状态：待实现。所属变更：[refactor-conversation-message-tree](../openspec/changes/refactor-conversation-message-tree/design.md)。
+> 状态：已实现并验收。所属变更：[refactor-conversation-message-tree](../openspec/changes/refactor-conversation-message-tree/design.md)。
 > 前置：[Phase 1](phase1-entry-tree-technical-design.md)、[Phase 2](phase2-agent-run-technical-design.md)、[Phase 3](phase3-context-projection-technical-design.md)。
 
 ## 1. 范围
@@ -25,6 +25,16 @@ Phase 4 实现上下文压缩（compaction）与预算协调，在 Phase 3 Proje
 - artifact（属于独立可选能力，在 compaction 后另行批准）
 
 Phase 4 属于产品 Phase 2，不阻塞 MVP 交付。
+
+**实施完成情况**：
+
+- ✅ 切片 1（commit 4e6c486）：预算强制、token 估算、边界选择
+- ✅ 切片 2（commit f3f404c）：摘要生成、Compaction Entry 存储
+- ✅ 切片 3（commit 7322701）：集成与复用
+- ✅ 生产装配（commit 8d777cd）：组件注入 main.go
+- ✅ 端到端测试（commit 46a57b1）：完整压缩流程验证
+
+所有测试通过，go vet 无警告。真实模型端到端验证需要运行服务。
 
 ## 2. 数据流与模块
 

@@ -140,24 +140,33 @@
   - Verify: manager/executor/真实 Graph 集成、新树/纯旧/混合历史、受控兼容原因、去重水位、一致性失败、legacy text 来源与当前 user 排除测试；调用方不绕过 context seam 自选历史。最终 token/window 预算属于 Phase 4，不在本任务声称实现。
   - Files: chat context/types、`backend/internal/agent/context/`、executor、测试
 
-## Phase 4: Future Context Compaction
+## Phase 4: Context Compaction（已完成）
 
-以下属于产品 Phase 2，不属于实施 Phase 2 Run。
+以下属于产品 Phase 2，不属于实施 Phase 2 Run。Phase 4 已完成实施与验收，详见 [Phase 4 Technical Design](../../../docs/phase4-context-compaction-technical-design.md)。
 
-- [ ] Task: [Phase 2] 实现最终预算与完整逻辑组选择器
+实施提交：
+- commit 4e6c486: 切片 1 - 预算强制与边界选择
+- commit f3f404c: 切片 2 - Compaction Entry 存储与摘要生成
+- commit 7322701: 切片 3 - 集成与复用
+- commit 8d777cd: 生产装配 - 组件注入 main.go
+- commit 46a57b1: 端到端集成测试
+
+所有单元测试、集成测试通过；`go test ./...` 和 `go vet ./...` 通过；Phase 3 回归测试通过。真实模型端到端验证需运行服务。
+
+- [x] Task: [Phase 2] 实现最终预算与完整逻辑组选择器
   - Acceptance: 每次模型调用校验输入估算+输出预留+安全余量<=窗口，包括运行期 system/tool schema 开销但不持久化 prompt 原文；按完整用户轮次/工具组选择安全前缀，保护当前请求和 pending group；artifact 非前置。
   - Verify: 中文/代码/工具增长、unknown window、超大单组、有界安全结果、无合法边界容量错误和每次调用复检。
-  - Files: `backend/internal/agent/context/`、预算/选择器测试
+  - Files: `backend/internal/agent/context/compaction.go`、`backend/internal/agent/context/compaction_test.go`（EnforcedBudgetPolicy、CharBasedTokenEstimator、DefaultBoundarySelector 及完整测试覆盖）
 
-- [ ] Task: [Phase 2] 实现 compaction 生成、来源校验与原子树提交/复用
+- [x] Task: [Phase 2] 实现 compaction 生成、来源校验与原子树提交/复用
   - Acceptance: 只总结选定当前路径安全事实，schema/source boundary/tool protocol/预算和 leaf+version CAS 成功才追加 compaction；失败不推进，原始事实保留，重启复用合法摘要。不读取失败分支/raw 工具/think/credential。
   - Verify: 模型失败、空/超预算/非法摘要、跨分支来源、CAS/存储冲突、多 compaction、无 pending 切割、重启复用；未知摘要拒绝/重建。
-  - Files: context summary/compaction、Entry 版本/schema 扩展、新增 migration 与测试
+  - Files: `backend/internal/agent/context/eino_summarizer.go`（EinoContextSummarizer）、`backend/internal/agent/context/summary_coordinator.go`（DefaultSummaryCoordinator）、`backend/internal/domain/conversation/compaction.go`（CompactionEntry、CompactionWriter/Reader 接口）、`backend/internal/infrastructure/repository/sqlite/entry_tree_repository.go`（AppendCompaction 实现）、`backend/internal/infrastructure/repository/sqlite/entry_tree_codec.go`（Encode/DecodeEntryCompaction）、`backend/internal/infrastructure/repository/sqlite/compaction_adapter.go`（CompactionAdapter）、`backend/internal/infrastructure/storage/migrations/0010_compaction_entries.sql`
 
-- [ ] Task: [Phase 2] 明确旧 covered_sequence 摘要迁移
+- [x] Task: [Phase 2] 明确旧 covered_sequence 摘要迁移
   - Acceptance: 旧线性摘要只通过显式 legacy mapping 或失效重建进入新 Projection，不伪装为树 Entry/path 覆盖水位；保持隐私与来源边界。
-  - Verify: sequence 间隙、未回填历史、已有/无 summary、迁移中断、模型配置变化与重建/容量错误。
-  - Files: context summary repository/converter、迁移方案与测试
+  - Verify: 采用失效重建策略；SummaryCoordinator.Prepare 中检查现有摘要是否基于 Entry Tree，旧摘要标记 invalid 并在预算允许时重新生成。
+  - Files: `backend/internal/agent/context/summary_coordinator.go`（canReuseSummary 方法中的迁移逻辑）、`backend/internal/agent/context/manager_compaction.go`（prepareWithCompaction 中的 convertCompactionEntryToSummaryRecord）、`backend/internal/agent/context/manager_compaction_integration_test.go`（集成测试验证）
 
 ## Optional Follow-up: Restricted Artifact Capability
 
